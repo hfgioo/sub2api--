@@ -313,6 +313,7 @@ export async function updateStreamTimeoutSettings(
 export interface PromptCacheSimulationSettings {
   enabled: boolean
   semantic_first: boolean
+  hit_ratio: number
   fallback_read_ratio: number
   fallback_write_ratio: number
   ttl_seconds: number

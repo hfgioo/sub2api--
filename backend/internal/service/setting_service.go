@@ -1374,11 +1374,17 @@ func (s *SettingService) GetPromptCacheSimulationSettings(ctx context.Context) (
 		return DefaultPromptCacheSimulationSettings(), nil
 	}
 
-	var settings PromptCacheSimulationSettings
-	if err := json.Unmarshal([]byte(value), &settings); err != nil {
+	settings := DefaultPromptCacheSimulationSettings()
+	if err := json.Unmarshal([]byte(value), settings); err != nil {
 		return DefaultPromptCacheSimulationSettings(), nil
 	}
 
+	if settings.HitRatio < 0 {
+		settings.HitRatio = 0
+	}
+	if settings.HitRatio > 1 {
+		settings.HitRatio = 1
+	}
 	if settings.FallbackReadRatio < 0 {
 		settings.FallbackReadRatio = 0
 	}
@@ -1404,7 +1410,7 @@ func (s *SettingService) GetPromptCacheSimulationSettings(ctx context.Context) (
 		settings.TTLSeconds = 3600
 	}
 
-	return &settings, nil
+	return settings, nil
 }
 
 func (s *SettingService) SetPromptCacheSimulationSettings(ctx context.Context, settings *PromptCacheSimulationSettings) error {
@@ -1413,6 +1419,9 @@ func (s *SettingService) SetPromptCacheSimulationSettings(ctx context.Context, s
 	}
 	if settings.FallbackReadRatio < 0 || settings.FallbackReadRatio > 1 {
 		return fmt.Errorf("fallback_read_ratio must be between 0-1")
+	}
+	if settings.HitRatio < 0 || settings.HitRatio > 1 {
+		return fmt.Errorf("hit_ratio must be between 0-1")
 	}
 	if settings.FallbackWriteRatio < 0 || settings.FallbackWriteRatio > 1 {
 		return fmt.Errorf("fallback_write_ratio must be between 0-1")

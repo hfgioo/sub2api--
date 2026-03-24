@@ -226,6 +226,7 @@ describe('admin SettingsView prompt cache simulation card', () => {
     getPromptCacheSimulationSettings.mockResolvedValue({
       enabled: true,
       semantic_first: true,
+      hit_ratio: 1,
       fallback_read_ratio: 0.7,
       fallback_write_ratio: 0.2,
       ttl_seconds: 300
@@ -247,7 +248,7 @@ describe('admin SettingsView prompt cache simulation card', () => {
     )
 
     expect(promptCacheCard?.exists()).toBe(true)
-    expect(promptCacheCard?.findAll('input[type="number"]')).toHaveLength(3)
+    expect(promptCacheCard?.findAll('input[type="number"]')).toHaveLength(4)
   })
 
   it('saves dedicated prompt cache simulation settings without using the main form submit', async () => {
@@ -264,9 +265,10 @@ describe('admin SettingsView prompt cache simulation card', () => {
     expect(promptCacheCard?.exists()).toBe(true)
 
     const numberInputs = promptCacheCard!.findAll('input[type="number"]')
-    await numberInputs[0].setValue('0.55')
-    await numberInputs[1].setValue('0.25')
-    await numberInputs[2].setValue('600')
+    await numberInputs[0].setValue('0.85')
+    await numberInputs[1].setValue('0.55')
+    await numberInputs[2].setValue('0.25')
+    await numberInputs[3].setValue('600')
 
     await promptCacheCard!.findAll('button').find((button) => button.text().includes('common.save'))?.trigger('click')
     await flushPromises()
@@ -274,6 +276,7 @@ describe('admin SettingsView prompt cache simulation card', () => {
     expect(updatePromptCacheSimulationSettings).toHaveBeenCalledWith({
       enabled: true,
       semantic_first: true,
+      hit_ratio: 0.85,
       fallback_read_ratio: 0.55,
       fallback_write_ratio: 0.25,
       ttl_seconds: 600

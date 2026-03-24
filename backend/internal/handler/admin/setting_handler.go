@@ -1513,6 +1513,7 @@ func (h *SettingHandler) GetPromptCacheSimulationSettings(c *gin.Context) {
 	response.Success(c, dto.PromptCacheSimulationSettings{
 		Enabled:            settings.Enabled,
 		SemanticFirst:      settings.SemanticFirst,
+		HitRatio:           settings.HitRatio,
 		FallbackReadRatio:  settings.FallbackReadRatio,
 		FallbackWriteRatio: settings.FallbackWriteRatio,
 		TTLSeconds:         settings.TTLSeconds,
@@ -1523,6 +1524,7 @@ func (h *SettingHandler) GetPromptCacheSimulationSettings(c *gin.Context) {
 type UpdatePromptCacheSimulationSettingsRequest struct {
 	Enabled            bool    `json:"enabled"`
 	SemanticFirst      bool    `json:"semantic_first"`
+	HitRatio           float64 `json:"hit_ratio"`
 	FallbackReadRatio  float64 `json:"fallback_read_ratio"`
 	FallbackWriteRatio float64 `json:"fallback_write_ratio"`
 	TTLSeconds         int     `json:"ttl_seconds"`
@@ -1540,6 +1542,7 @@ func (h *SettingHandler) UpdatePromptCacheSimulationSettings(c *gin.Context) {
 	settings := &service.PromptCacheSimulationSettings{
 		Enabled:            req.Enabled,
 		SemanticFirst:      req.SemanticFirst,
+		HitRatio:           req.HitRatio,
 		FallbackReadRatio:  req.FallbackReadRatio,
 		FallbackWriteRatio: req.FallbackWriteRatio,
 		TTLSeconds:         req.TTLSeconds,
@@ -1558,6 +1561,7 @@ func (h *SettingHandler) UpdatePromptCacheSimulationSettings(c *gin.Context) {
 	response.Success(c, dto.PromptCacheSimulationSettings{
 		Enabled:            updatedSettings.Enabled,
 		SemanticFirst:      updatedSettings.SemanticFirst,
+		HitRatio:           updatedSettings.HitRatio,
 		FallbackReadRatio:  updatedSettings.FallbackReadRatio,
 		FallbackWriteRatio: updatedSettings.FallbackWriteRatio,
 		TTLSeconds:         updatedSettings.TTLSeconds,
