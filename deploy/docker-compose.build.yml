@@ -1,0 +1,25 @@
+# =============================================================================
+# Sub2API Docker Compose - Local Source Build Override
+# =============================================================================
+# Use this file together with docker-compose.local.yml / docker-compose.yml /
+# docker-compose.standalone.yml to build the application image from the current
+# repository source code instead of pulling a prebuilt remote image.
+#
+# Examples:
+#   docker compose -f docker-compose.local.yml -f docker-compose.build.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#   docker compose -f docker-compose.standalone.yml -f docker-compose.build.yml up -d --build
+# =============================================================================
+
+services:
+  sub2api:
+    image: ${SUB2API_IMAGE:-sub2api:local}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+        GOSUMDB: ${GOSUMDB:-sum.golang.google.cn}
+        VERSION: ${SUB2API_VERSION:-}
+        COMMIT: ${SUB2API_COMMIT:-docker-local}
+        DATE: ${SUB2API_BUILD_DATE:-}

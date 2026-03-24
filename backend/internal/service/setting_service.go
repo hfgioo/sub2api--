@@ -1343,6 +1343,76 @@ func (s *SettingService) GetClaudeCodeVersionBounds(ctx context.Context) (min, m
 	return b.min, b.max
 }
 
+func (s *SettingService) GetPromptCacheSimulationSettings(ctx context.Context) (*PromptCacheSimulationSettings, error) {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyPromptCacheSimulationSettings)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return DefaultPromptCacheSimulationSettings(), nil
+		}
+		return nil, fmt.Errorf("get prompt cache simulation settings: %w", err)
+	}
+	if value == "" {
+		return DefaultPromptCacheSimulationSettings(), nil
+	}
+
+	var settings PromptCacheSimulationSettings
+	if err := json.Unmarshal([]byte(value), &settings); err != nil {
+		return DefaultPromptCacheSimulationSettings(), nil
+	}
+
+	if settings.FallbackReadRatio < 0 {
+		settings.FallbackReadRatio = 0
+	}
+	if settings.FallbackReadRatio > 1 {
+		settings.FallbackReadRatio = 1
+	}
+	if settings.FallbackWriteRatio < 0 {
+		settings.FallbackWriteRatio = 0
+	}
+	if settings.FallbackWriteRatio > 1 {
+		settings.FallbackWriteRatio = 1
+	}
+	if settings.FallbackReadRatio+settings.FallbackWriteRatio > 1 {
+		settings.FallbackWriteRatio = 1 - settings.FallbackReadRatio
+		if settings.FallbackWriteRatio < 0 {
+			settings.FallbackWriteRatio = 0
+		}
+	}
+	if settings.TTLSeconds < 60 {
+		settings.TTLSeconds = 60
+	}
+	if settings.TTLSeconds > 3600 {
+		settings.TTLSeconds = 3600
+	}
+
+	return &settings, nil
+}
+
+func (s *SettingService) SetPromptCacheSimulationSettings(ctx context.Context, settings *PromptCacheSimulationSettings) error {
+	if settings == nil {
+		return fmt.Errorf("settings cannot be nil")
+	}
+	if settings.FallbackReadRatio < 0 || settings.FallbackReadRatio > 1 {
+		return fmt.Errorf("fallback_read_ratio must be between 0-1")
+	}
+	if settings.FallbackWriteRatio < 0 || settings.FallbackWriteRatio > 1 {
+		return fmt.Errorf("fallback_write_ratio must be between 0-1")
+	}
+	if settings.FallbackReadRatio+settings.FallbackWriteRatio > 1 {
+		return fmt.Errorf("fallback ratios must sum to 1 or less")
+	}
+	if settings.TTLSeconds < 60 || settings.TTLSeconds > 3600 {
+		return fmt.Errorf("ttl_seconds must be between 60-3600")
+	}
+
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("marshal prompt cache simulation settings: %w", err)
+	}
+
+	return s.settingRepo.Set(ctx, SettingKeyPromptCacheSimulationSettings, string(data))
+}
+
 // GetRectifierSettings 获取请求整流器配置
 func (s *SettingService) GetRectifierSettings(ctx context.Context) (*RectifierSettings, error) {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyRectifierSettings)

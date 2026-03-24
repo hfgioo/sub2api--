@@ -4415,6 +4415,22 @@ export default {
         saved: 'Stream timeout settings saved',
         saveFailed: 'Failed to save stream timeout settings'
       },
+      promptCacheSimulation: {
+        title: 'Prompt Cache Simulation',
+        description: 'Simulate Anthropic-style prompt caching usage for /v1/messages when upstream does not provide authoritative cache fields.',
+        enabled: 'Enable Prompt Cache Simulation',
+        enabledHint: 'Applies semantic-first simulation with ratio fallback on the Anthropic-compatible messages endpoint.',
+        semanticFirst: 'Prefer Semantic Simulation',
+        semanticFirstHint: 'Use semantic matching first, then fall back to configured ratios only when semantic simulation is unavailable.',
+        fallbackReadRatio: 'Fallback Read Ratio',
+        fallbackReadRatioHint: 'Ratio used for cache_read_input_tokens on fallback cache hits.',
+        fallbackWriteRatio: 'Fallback Write Ratio',
+        fallbackWriteRatioHint: 'Ratio used for cache_creation_input_tokens on fallback cache writes.',
+        ttlSeconds: 'Cache TTL (seconds)',
+        ttlSecondsHint: 'TTL for simulated prompt cache entries.',
+        saved: 'Prompt cache simulation settings saved',
+        saveFailed: 'Failed to save prompt cache simulation settings'
+      },
       rectifier: {
         title: 'Request Rectifier',
         description: 'Automatically fix request parameters and retry when upstream returns specific errors',

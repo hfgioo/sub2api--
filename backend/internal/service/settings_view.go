@@ -239,6 +239,27 @@ func DefaultOverloadCooldownSettings() *OverloadCooldownSettings {
 	}
 }
 
+// PromptCacheSimulationSettings Prompt Caching 模拟配置
+// 仅用于 /v1/messages 的 Anthropic 风格缓存 usage 模拟。
+type PromptCacheSimulationSettings struct {
+	Enabled            bool    `json:"enabled"`
+	SemanticFirst      bool    `json:"semantic_first"`
+	FallbackReadRatio  float64 `json:"fallback_read_ratio"`
+	FallbackWriteRatio float64 `json:"fallback_write_ratio"`
+	TTLSeconds         int     `json:"ttl_seconds"`
+}
+
+// DefaultPromptCacheSimulationSettings 返回默认的 Prompt Caching 模拟配置。
+func DefaultPromptCacheSimulationSettings() *PromptCacheSimulationSettings {
+	return &PromptCacheSimulationSettings{
+		Enabled:            false,
+		SemanticFirst:      true,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	}
+}
+
 // DefaultBetaPolicySettings 返回默认的 Beta 策略配置
 func DefaultBetaPolicySettings() *BetaPolicySettings {
 	return &BetaPolicySettings{

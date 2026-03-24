@@ -4579,6 +4579,22 @@ export default {
         saved: '流超时设置保存成功',
         saveFailed: '保存流超时设置失败'
       },
+      promptCacheSimulation: {
+        title: '缓存模拟',
+        description: '当上游未返回权威缓存字段时，为 /v1/messages 模拟 Anthropic 风格的 Prompt Caching 用量字段。',
+        enabled: '启用缓存模拟',
+        enabledHint: '仅作用于 Anthropic 兼容的 messages 接口，优先走语义模拟，失败时再回退到比例模拟。',
+        semanticFirst: '优先语义模拟',
+        semanticFirstHint: '先尝试按语义匹配缓存命中，只有无法可靠模拟时才使用回退比例。',
+        fallbackReadRatio: '回退读取比例',
+        fallbackReadRatioHint: '回退命中时用于 cache_read_input_tokens 的比例。',
+        fallbackWriteRatio: '回退写入比例',
+        fallbackWriteRatioHint: '回退写入时用于 cache_creation_input_tokens 的比例。',
+        ttlSeconds: '缓存 TTL（秒）',
+        ttlSecondsHint: '模拟缓存条目的生存时间。',
+        saved: '缓存模拟设置保存成功',
+        saveFailed: '保存缓存模拟设置失败'
+      },
       rectifier: {
         title: '请求整流器',
         description: '当上游返回特定错误时，自动修正请求参数并重试，提高请求成功率',

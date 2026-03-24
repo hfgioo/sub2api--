@@ -178,6 +178,13 @@ const (
 	SettingKeyOverloadCooldownSettings = "overload_cooldown_settings"
 
 	// =========================
+	// Prompt Cache Simulation
+	// =========================
+
+	// SettingKeyPromptCacheSimulationSettings stores JSON config for Anthropic-style prompt cache usage simulation.
+	SettingKeyPromptCacheSimulationSettings = "prompt_cache_simulation_settings"
+
+	// =========================
 	// Stream Timeout Handling
 	// =========================
 

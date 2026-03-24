@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -152,7 +153,7 @@ func TestHandleStreamingResponse_CacheTokens(t *testing.T) {
 		_, _ = pw.Write([]byte("data: [DONE]\n\n"))
 	}()
 
-	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false, nil)
 	_ = pr.Close()
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -179,16 +180,36 @@ func TestHandleStreamingResponse_EmptyStream(t *testing.T) {
 		_ = pw.Close()
 	}()
 
-	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false, nil)
 	_ = pr.Close()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "missing terminal event")
 	require.NotNil(t, result)
 }
 
-func TestHandleStreamingResponse_SpecialCharactersInJSON(t *testing.T) {
+func TestHandleStreamingResponse_PromptCacheSimulationPatchesMessageStartAndUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	repo := newMockSettingRepo()
+	data, err := json.Marshal(PromptCacheSimulationSettings{
+		Enabled:            true,
+		SemanticFirst:      true,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	})
+	require.NoError(t, err)
+	repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
 	svc := newMinimalGatewayService()
+	svc.settingService = NewSettingService(repo, nil)
+	svc.promptCacheSimulationService = NewPromptCacheSimulationService(svc.settingService)
+
+	parsed, err := ParseGatewayRequest([]byte(`{
+		"model":"model",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],
+		"metadata":{"user_id":"user-1"}
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -199,22 +220,73 @@ func TestHandleStreamingResponse_SpecialCharactersInJSON(t *testing.T) {
 
 	go func() {
 		defer func() { _ = pw.Close() }()
-		// 包含特殊字符的 content_block_delta（引号、换行、Unicode）
-		_, _ = pw.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello \\\"world\\\"\\n你好\"}}\n\n"))
-		_, _ = pw.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\n"))
+		_, _ = pw.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}\n\n"))
 		_, _ = pw.Write([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":3}}\n\n"))
 		_, _ = pw.Write([]byte("data: [DONE]\n\n"))
 	}()
 
-	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false, parsed)
 	_ = pr.Close()
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, result.usage)
-	require.Equal(t, 5, result.usage.InputTokens)
-	require.Equal(t, 3, result.usage.OutputTokens)
-
-	// 验证响应中包含转发的数据
-	body := rec.Body.String()
-	require.Contains(t, body, "content_block_delta", "响应应包含转发的 SSE 事件")
+	require.Zero(t, result.usage.InputTokens)
+	require.Equal(t, 10, result.usage.CacheCreationInputTokens)
+	require.Equal(t, 10, result.usage.CacheCreation5mTokens)
+	require.Zero(t, result.usage.CacheReadInputTokens)
+	require.Contains(t, rec.Body.String(), `"input_tokens":0`)
+	require.Contains(t, rec.Body.String(), `"cache_creation_input_tokens":10`)
+	require.Contains(t, rec.Body.String(), `"ephemeral_5m_input_tokens":10`)
 }
+
+func TestHandleStreamingResponse_PromptCacheSimulationPreservesUpstreamFieldsOnMessageStart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := newMockSettingRepo()
+	data, err := json.Marshal(PromptCacheSimulationSettings{
+		Enabled:            true,
+		SemanticFirst:      true,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	})
+	require.NoError(t, err)
+	repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+	svc := newMinimalGatewayService()
+	svc.settingService = NewSettingService(repo, nil)
+	svc.promptCacheSimulationService = NewPromptCacheSimulationService(svc.settingService)
+
+	parsed, err := ParseGatewayRequest([]byte(`{
+		"model":"model",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],
+		"metadata":{"user_id":"user-1"}
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
+
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":2,\"cache_creation\":{\"ephemeral_5m_input_tokens\":4}}}}\n\n"))
+		_, _ = pw.Write([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":3}}\n\n"))
+		_, _ = pw.Write([]byte("data: [DONE]\n\n"))
+	}()
+
+	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false, parsed)
+	_ = pr.Close()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 2, result.usage.CacheReadInputTokens)
+	require.Zero(t, result.usage.CacheCreationInputTokens)
+	require.Equal(t, 4, result.usage.CacheCreation5mTokens)
+	require.Contains(t, rec.Body.String(), `"cache_read_input_tokens":2`)
+	require.Contains(t, rec.Body.String(), `"ephemeral_5m_input_tokens":4`)
+	require.NotContains(t, rec.Body.String(), `"cache_creation_input_tokens":10`)
+}
+

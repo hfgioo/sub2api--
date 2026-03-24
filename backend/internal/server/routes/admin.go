@@ -406,6 +406,9 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// 529过载冷却配置
 		adminSettings.GET("/overload-cooldown", h.Admin.Setting.GetOverloadCooldownSettings)
 		adminSettings.PUT("/overload-cooldown", h.Admin.Setting.UpdateOverloadCooldownSettings)
+		// Prompt Cache Simulation 配置
+		adminSettings.GET("/prompt-cache-simulation", h.Admin.Setting.GetPromptCacheSimulationSettings)
+		adminSettings.PUT("/prompt-cache-simulation", h.Admin.Setting.UpdatePromptCacheSimulationSettings)
 		// 流超时处理配置
 		adminSettings.GET("/stream-timeout", h.Admin.Setting.GetStreamTimeoutSettings)
 		adminSettings.PUT("/stream-timeout", h.Admin.Setting.UpdateStreamTimeoutSettings)

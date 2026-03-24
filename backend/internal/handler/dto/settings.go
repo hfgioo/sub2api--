@@ -164,6 +164,15 @@ type OverloadCooldownSettings struct {
 	CooldownMinutes int  `json:"cooldown_minutes"`
 }
 
+// PromptCacheSimulationSettings Prompt Cache Simulation 配置 DTO
+type PromptCacheSimulationSettings struct {
+	Enabled            bool    `json:"enabled"`
+	SemanticFirst      bool    `json:"semantic_first"`
+	FallbackReadRatio  float64 `json:"fallback_read_ratio"`
+	FallbackWriteRatio float64 `json:"fallback_write_ratio"`
+	TTLSeconds         int     `json:"ttl_seconds"`
+}
+
 // StreamTimeoutSettings 流超时处理配置 DTO
 type StreamTimeoutSettings struct {
 	Enabled                bool   `json:"enabled"`

@@ -423,6 +423,68 @@ func TestGatewayServiceRecordUsage_ReasoningEffortPersisted(t *testing.T) {
 	require.Equal(t, "max", *usageRepo.lastLog.ReasoningEffort)
 }
 
+func TestGatewayServiceRecordUsage_PersistsSimulatedPromptCacheUsage(t *testing.T) {
+	usageRepo := &openAIRecordUsageBestEffortLogRepoStub{}
+	svc := newGatewayRecordUsageServiceForTest(usageRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+
+	err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+		Result: &ForwardResult{
+			RequestID: "gateway_simulated_prompt_cache",
+			Usage: ClaudeUsage{
+				InputTokens:              10,
+				OutputTokens:             6,
+				CacheCreationInputTokens: 8,
+				CacheReadInputTokens:     2,
+				CacheCreation5mTokens:    8,
+			},
+			Model:    "claude-sonnet-4",
+			Duration: time.Second,
+		},
+		APIKey:  &APIKey{ID: 509, Quota: 100},
+		User:    &User{ID: 609},
+		Account: &Account{ID: 709},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, 8, usageRepo.lastLog.CacheCreationTokens)
+	require.Equal(t, 2, usageRepo.lastLog.CacheReadTokens)
+	require.Equal(t, 8, usageRepo.lastLog.CacheCreation5mTokens)
+	require.Zero(t, usageRepo.lastLog.CacheCreation1hTokens)
+}
+
+func TestGatewayServiceRecordUsageWithLongContext_PersistsSimulatedPromptCacheUsage(t *testing.T) {
+	usageRepo := &openAIRecordUsageBestEffortLogRepoStub{}
+	svc := newGatewayRecordUsageServiceForTest(usageRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+
+	err := svc.RecordUsageWithLongContext(context.Background(), &RecordUsageLongContextInput{
+		Result: &ForwardResult{
+			RequestID: "gateway_long_context_simulated_prompt_cache",
+			Usage: ClaudeUsage{
+				InputTokens:              12,
+				OutputTokens:             8,
+				CacheCreationInputTokens: 5,
+				CacheReadInputTokens:     3,
+				CacheCreation5mTokens:    5,
+			},
+			Model:    "claude-sonnet-4",
+			Duration: time.Second,
+		},
+		APIKey:                &APIKey{ID: 510, Quota: 100},
+		User:                  &User{ID: 610},
+		Account:               &Account{ID: 710},
+		LongContextThreshold:  200000,
+		LongContextMultiplier: 2,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, 5, usageRepo.lastLog.CacheCreationTokens)
+	require.Equal(t, 3, usageRepo.lastLog.CacheReadTokens)
+	require.Equal(t, 5, usageRepo.lastLog.CacheCreation5mTokens)
+	require.Zero(t, usageRepo.lastLog.CacheCreation1hTokens)
+}
+
 func TestGatewayServiceRecordUsage_ReasoningEffortNil(t *testing.T) {
 	usageRepo := &openAIRecordUsageBestEffortLogRepoStub{}
 	svc := newGatewayRecordUsageServiceForTest(usageRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})

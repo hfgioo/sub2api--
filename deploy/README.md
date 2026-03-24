@@ -65,6 +65,34 @@ docker compose -f docker-compose.local.yml logs sub2api | grep "admin password"
 # http://localhost:8080
 ```
 
+### Method 1.5: Build And Deploy Current Local Source
+
+If you need the running container to include your current unmerged local changes, build from the current repository source instead of pulling `weishaw/sub2api:latest`.
+
+```bash
+# From repository root
+cd deploy
+
+# Optional: create .env first
+cp .env.example .env
+
+# Build current source and start with local data directories
+docker compose -f docker-compose.local.yml -f docker-compose.build.yml up -d --build
+```
+
+This mode:
+- builds Go and frontend **inside Docker**,
+- does **not** require Go on the host,
+- tags the local image as `sub2api:local` by default,
+- then starts the same deployment stack against that locally built image.
+
+You can also prebuild explicitly:
+
+```bash
+./build_image.sh
+SUB2API_IMAGE=sub2api:local docker compose -f docker-compose.local.yml up -d
+```
+
 ### Method 2: Manual Deployment
 
 If you prefer manual control:

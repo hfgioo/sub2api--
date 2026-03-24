@@ -1053,11 +1053,113 @@ func TestParseClaudeUsageFromResponseBody(t *testing.T) {
 		require.Equal(t, 8, got.CacheCreation1hTokens)
 	})
 
-	t.Run("keep explicit aggregate values", func(t *testing.T) {
-		body := []byte(`{"usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":9,"cache_read_input_tokens":7,"cached_tokens":99,"cache_creation":{"ephemeral_5m_input_tokens":4,"ephemeral_1h_input_tokens":5}}}`)
-		got := parseClaudeUsageFromResponseBody(body)
-		require.Equal(t, 9, got.CacheCreationInputTokens, "已显式提供聚合字段时不应被明细覆盖")
-		require.Equal(t, 7, got.CacheReadInputTokens, "已显式提供 cache_read_input_tokens 时不应回退 cached_tokens")
+	t.Run("simulate missing cache fields when eligible", func(t *testing.T) {
+		repo := newMockSettingRepo()
+		data, err := json.Marshal(PromptCacheSimulationSettings{
+			Enabled:            true,
+			SemanticFirst:      true,
+			FallbackReadRatio:  0.7,
+			FallbackWriteRatio: 0.2,
+			TTLSeconds:         300,
+		})
+		require.NoError(t, err)
+		repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+		cfg := &config.Config{}
+		svc := NewGatewayService(
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			&RateLimitService{},
+			nil,
+			cfg,
+			nil,
+			nil,
+			NewBillingService(cfg, nil),
+			nil,
+			&BillingCacheService{},
+			nil,
+			nil,
+			&DeferredService{},
+			nil,
+			nil,
+			nil,
+			NewSettingService(repo, cfg),
+			nil,
+		)
+
+		parsed, err := ParseGatewayRequest([]byte(`{
+			"model":"claude-sonnet-4",
+			"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],
+			"metadata":{"user_id":"user-1"}
+		}`), PlatformAnthropic)
+		require.NoError(t, err)
+
+		usage := &ClaudeUsage{InputTokens: 21}
+		require.True(t, svc.applyPromptCacheSimulationToUsage(context.Background(), "/v1/messages", parsed, "claude-sonnet-4", usage))
+		require.Zero(t, usage.InputTokens)
+		require.Equal(t, 21, usage.CacheCreationInputTokens)
+		require.Equal(t, 21, usage.CacheCreation5mTokens)
+		require.Zero(t, usage.CacheReadInputTokens)
+	})
+
+	t.Run("preserve explicit upstream cache fields", func(t *testing.T) {
+		repo := newMockSettingRepo()
+		data, err := json.Marshal(PromptCacheSimulationSettings{
+			Enabled:            true,
+			SemanticFirst:      true,
+			FallbackReadRatio:  0.7,
+			FallbackWriteRatio: 0.2,
+			TTLSeconds:         300,
+		})
+		require.NoError(t, err)
+		repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+		cfg := &config.Config{}
+		svc := NewGatewayService(
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			&RateLimitService{},
+			nil,
+			cfg,
+			nil,
+			nil,
+			NewBillingService(cfg, nil),
+			nil,
+			&BillingCacheService{},
+			nil,
+			nil,
+			&DeferredService{},
+			nil,
+			nil,
+			nil,
+			NewSettingService(repo, cfg),
+			nil,
+		)
+
+		parsed, err := ParseGatewayRequest([]byte(`{
+			"model":"claude-sonnet-4",
+			"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],
+			"metadata":{"user_id":"user-1"}
+		}`), PlatformAnthropic)
+		require.NoError(t, err)
+
+		usage := &ClaudeUsage{InputTokens: 21, CacheReadInputTokens: 7}
+		require.False(t, svc.applyPromptCacheSimulationToUsage(context.Background(), "/v1/messages", parsed, "claude-sonnet-4", usage))
+		require.Equal(t, 21, usage.InputTokens)
+		require.Equal(t, 7, usage.CacheReadInputTokens)
+		require.Zero(t, usage.CacheCreationInputTokens)
 	})
 }
 

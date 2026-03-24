@@ -306,6 +306,31 @@ export async function updateStreamTimeoutSettings(
   return data
 }
 
+// ==================== Prompt Cache Simulation Settings ====================
+
+export interface PromptCacheSimulationSettings {
+  enabled: boolean
+  semantic_first: boolean
+  fallback_read_ratio: number
+  fallback_write_ratio: number
+  ttl_seconds: number
+}
+
+export async function getPromptCacheSimulationSettings(): Promise<PromptCacheSimulationSettings> {
+  const { data } = await apiClient.get<PromptCacheSimulationSettings>('/admin/settings/prompt-cache-simulation')
+  return data
+}
+
+export async function updatePromptCacheSimulationSettings(
+  settings: PromptCacheSimulationSettings
+): Promise<PromptCacheSimulationSettings> {
+  const { data } = await apiClient.put<PromptCacheSimulationSettings>(
+    '/admin/settings/prompt-cache-simulation',
+    settings
+  )
+  return data
+}
+
 // ==================== Rectifier Settings ====================
 
 /**
@@ -532,6 +557,8 @@ export const settingsAPI = {
   updateOverloadCooldownSettings,
   getStreamTimeoutSettings,
   updateStreamTimeoutSettings,
+  getPromptCacheSimulationSettings,
+  updatePromptCacheSimulationSettings,
   getRectifierSettings,
   updateRectifierSettings,
   getBetaPolicySettings,

@@ -1,9 +1,16 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -256,6 +263,247 @@ func TestNonStreamingReconcile_NativeClaude(t *testing.T) {
 	assert.Equal(t, 30, response.Usage.CacheReadInputTokens)
 }
 
+func TestPromptCacheSimulationService_SemanticFirstFullPromptCreatesThenReads(t *testing.T) {
+	repo := newMockSettingRepo()
+	data, err := json.Marshal(PromptCacheSimulationSettings{
+		Enabled:            true,
+		SemanticFirst:      true,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	})
+	require.NoError(t, err)
+	repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+	settingSvc := NewSettingService(repo, nil)
+	simSvc := NewPromptCacheSimulationService(settingSvc)
+	parsed, err := ParseGatewayRequest([]byte(`{
+		"model":"claude-sonnet-4",
+		"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral"}}],
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],
+		"tools":[{"name":"lookup","input_schema":{"type":"object"},"cache_control":{"type":"ephemeral"}}]
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+	parsed.MetadataUserID = "user-1"
+
+	first, ok := simSvc.Simulate(context.Background(), "/v1/messages", parsed, "metadata:user-1", "claude-sonnet-4", 100)
+	require.True(t, ok)
+	require.Zero(t, first.InputTokens)
+	require.Equal(t, 100, first.CacheCreationInputTokens)
+	require.Equal(t, 100, first.CacheCreation5mTokens)
+	require.Zero(t, first.CacheReadInputTokens)
+
+	second, ok := simSvc.Simulate(context.Background(), "/v1/messages", parsed, "metadata:user-1", "claude-sonnet-4", 100)
+	require.True(t, ok)
+	require.Zero(t, second.InputTokens)
+	require.Zero(t, second.CacheCreationInputTokens)
+	require.Equal(t, 100, second.CacheReadInputTokens)
+}
+
+func TestPromptCacheSimulationService_FallbackUsesRatiosWhenSemanticUnavailable(t *testing.T) {
+	repo := newMockSettingRepo()
+	data, err := json.Marshal(PromptCacheSimulationSettings{
+		Enabled:            true,
+		SemanticFirst:      true,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	})
+	require.NoError(t, err)
+	repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+	settingSvc := NewSettingService(repo, nil)
+	simSvc := NewPromptCacheSimulationService(settingSvc)
+	parsed, err := ParseGatewayRequest([]byte(`{
+		"model":"claude-sonnet-4",
+		"system":[{"type":"text","text":"uncached system"}],
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}},{"type":"text","text":"tail"}]}]
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+	parsed.MetadataUserID = "user-1"
+
+	first, ok := simSvc.Simulate(context.Background(), "/v1/messages", parsed, "metadata:user-1", "claude-sonnet-4", 100)
+	require.True(t, ok)
+	require.Equal(t, 80, first.InputTokens)
+	require.Equal(t, 20, first.CacheCreationInputTokens)
+	require.Equal(t, 20, first.CacheCreation5mTokens)
+	require.Zero(t, first.CacheReadInputTokens)
+
+	second, ok := simSvc.Simulate(context.Background(), "/v1/messages", parsed, "metadata:user-1", "claude-sonnet-4", 100)
+	require.True(t, ok)
+	require.Equal(t, 30, second.InputTokens)
+	require.Zero(t, second.CacheCreationInputTokens)
+	require.Zero(t, second.CacheCreation5mTokens)
+	require.Equal(t, 70, second.CacheReadInputTokens)
+}
+
+func TestPromptCacheSimulationService_IsolatedBySessionAndModel(t *testing.T) {
+	repo := newMockSettingRepo()
+	data, err := json.Marshal(PromptCacheSimulationSettings{
+		Enabled:            true,
+		SemanticFirst:      true,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	})
+	require.NoError(t, err)
+	repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+	settingSvc := NewSettingService(repo, nil)
+	simSvc := NewPromptCacheSimulationService(settingSvc)
+	parsed, err := ParseGatewayRequest([]byte(`{
+		"model":"claude-sonnet-4",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}]
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+	parsedOtherModel, err := ParseGatewayRequest([]byte(`{
+		"model":"claude-opus-4",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}]
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+
+	first, ok := simSvc.Simulate(context.Background(), "/v1/messages", parsed, "metadata:user-a", "claude-sonnet-4", 50)
+	require.True(t, ok)
+	require.Zero(t, first.InputTokens)
+	require.Equal(t, 50, first.CacheCreationInputTokens)
+
+	otherSession, ok := simSvc.Simulate(context.Background(), "/v1/messages", parsed, "metadata:user-b", "claude-sonnet-4", 50)
+	require.True(t, ok)
+	require.Zero(t, otherSession.InputTokens)
+	require.Equal(t, 50, otherSession.CacheCreationInputTokens)
+
+	otherModel, ok := simSvc.Simulate(context.Background(), "/v1/messages", parsedOtherModel, "metadata:user-a", "claude-opus-4", 50)
+	require.True(t, ok)
+	require.Zero(t, otherModel.InputTokens)
+	require.Equal(t, 50, otherModel.CacheCreationInputTokens)
+}
+
+func TestPromptCacheSimulationService_PreservesUpstreamUsageAndFallsBackToSessionContext(t *testing.T) {
+	repo := newMockSettingRepo()
+	data, err := json.Marshal(PromptCacheSimulationSettings{
+		Enabled:            true,
+		SemanticFirst:      true,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	})
+	require.NoError(t, err)
+	repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+	settingSvc := NewSettingService(repo, &config.Config{})
+	svc := NewGatewayService(
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		&RateLimitService{},
+		nil,
+		&config.Config{},
+		nil,
+		nil,
+		NewBillingService(&config.Config{}, nil),
+		nil,
+		&BillingCacheService{},
+		nil,
+		nil,
+		&DeferredService{},
+		nil,
+		nil,
+		nil,
+		settingSvc,
+		nil,
+	)
+
+	parsed, err := ParseGatewayRequest([]byte(`{
+		"model":"claude-sonnet-4",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}]
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+	parsed.SessionContext = &SessionContext{ClientIP: "10.0.0.1", UserAgent: "ua-test", APIKeyID: 42}
+
+	upstreamUsage := &ClaudeUsage{InputTokens: 100, CacheReadInputTokens: 9}
+	require.False(t, svc.applyPromptCacheSimulationToUsage(context.Background(), "/v1/messages", parsed, "claude-sonnet-4", upstreamUsage))
+	require.Equal(t, 100, upstreamUsage.InputTokens)
+	require.Equal(t, 9, upstreamUsage.CacheReadInputTokens)
+	require.Zero(t, upstreamUsage.CacheCreationInputTokens)
+
+	first := &ClaudeUsage{InputTokens: 100}
+	require.True(t, svc.applyPromptCacheSimulationToUsage(context.Background(), "/v1/messages", parsed, "claude-sonnet-4", first))
+	require.Zero(t, first.InputTokens)
+	require.Equal(t, 100, first.CacheCreationInputTokens)
+	require.Equal(t, 100, first.CacheCreation5mTokens)
+	require.Zero(t, first.CacheReadInputTokens)
+
+	second := &ClaudeUsage{InputTokens: 100}
+	require.True(t, svc.applyPromptCacheSimulationToUsage(context.Background(), "/v1/messages", parsed, "claude-sonnet-4", second))
+	require.Zero(t, second.InputTokens)
+	require.Equal(t, 100, second.CacheReadInputTokens)
+	require.Zero(t, second.CacheCreationInputTokens)
+}
+
+func TestPromptCacheSimulationService_DisabledForNonAnthropicUsageShapes(t *testing.T) {
+	service := &PromptCacheSimulationService{}
+	decision, ok := service.Simulate(context.Background(), "/v1/messages", nil, "metadata:user-1", "claude-sonnet-4", 100)
+	require.False(t, ok)
+	require.Nil(t, decision)
+}
+
+func TestPromptCacheSimulationService_DoesNotSimulateOutsideMessagesPath(t *testing.T) {
+	repo := newMockSettingRepo()
+	data, err := json.Marshal(PromptCacheSimulationSettings{
+		Enabled:            true,
+		SemanticFirst:      true,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	})
+	require.NoError(t, err)
+	repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+	settingSvc := NewSettingService(repo, nil)
+	service := NewPromptCacheSimulationService(settingSvc)
+	parsed, err := ParseGatewayRequest([]byte(`{
+		"model":"claude-sonnet-4",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],
+		"metadata":{"user_id":"user-1"}
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+
+	decision, ok := service.Simulate(context.Background(), "/v1/complete", parsed, "metadata:user-1", "claude-sonnet-4", 100)
+	require.False(t, ok)
+	require.Nil(t, decision)
+}
+
+func TestPromptCacheSimulationService_DoesNotSimulateForModelMismatch(t *testing.T) {
+	repo := newMockSettingRepo()
+	data, err := json.Marshal(PromptCacheSimulationSettings{
+		Enabled:            true,
+		SemanticFirst:      true,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	})
+	require.NoError(t, err)
+	repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+	settingSvc := NewSettingService(repo, nil)
+	service := NewPromptCacheSimulationService(settingSvc)
+	parsed, err := ParseGatewayRequest([]byte(`{
+		"model":"claude-sonnet-4",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],
+		"metadata":{"user_id":"user-1"}
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+
+	decision, ok := service.Simulate(context.Background(), "/v1/messages", parsed, "metadata:user-1", "claude-opus-4", 100)
+	require.False(t, ok)
+	require.Nil(t, decision)
+}
+
 func TestNonStreamingReconcile_NoCachedTokens(t *testing.T) {
 	// 没有 cached_tokens 字段
 	body := []byte(`{
@@ -286,3 +534,156 @@ func TestNonStreamingReconcile_NoCachedTokens(t *testing.T) {
 	assert.Equal(t, 0, response.Usage.CacheReadInputTokens)
 	assert.Equal(t, int64(0), gjson.GetBytes(body, "usage.cache_read_input_tokens").Int())
 }
+
+func TestHandleNonStreamingResponse_PromptCacheSimulationPatchesBodyAndUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := newMockSettingRepo()
+	data, err := json.Marshal(PromptCacheSimulationSettings{
+		Enabled:            true,
+		SemanticFirst:      true,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	})
+	require.NoError(t, err)
+	repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+	cfg := &config.Config{}
+	svc := NewGatewayService(
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		&RateLimitService{},
+		nil,
+		cfg,
+		nil,
+		nil,
+		NewBillingService(cfg, nil),
+		nil,
+		&BillingCacheService{},
+		nil,
+		nil,
+		&DeferredService{},
+		nil,
+		nil,
+		nil,
+		NewSettingService(repo, cfg),
+		nil,
+	)
+
+	parsed, err := ParseGatewayRequest([]byte(`{
+		"model":"claude-sonnet-4",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],
+		"metadata":{"user_id":"user-1"}
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body: io.NopCloser(strings.NewReader(`{
+			"type":"message",
+			"model":"claude-sonnet-4",
+			"usage":{"input_tokens":10,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}
+		}`)),
+	}
+
+	usage, err := svc.handleNonStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, "claude-sonnet-4", "claude-sonnet-4", parsed)
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	require.Zero(t, usage.InputTokens)
+	require.Equal(t, 10, usage.CacheCreationInputTokens)
+	require.Equal(t, 10, usage.CacheCreation5mTokens)
+	require.Zero(t, usage.CacheReadInputTokens)
+	require.Equal(t, int64(0), gjson.Get(rec.Body.String(), "usage.input_tokens").Int())
+	require.Equal(t, int64(10), gjson.Get(rec.Body.String(), "usage.cache_creation_input_tokens").Int())
+	require.Equal(t, int64(10), gjson.Get(rec.Body.String(), "usage.cache_creation.ephemeral_5m_input_tokens").Int())
+}
+
+func TestHandleNonStreamingResponse_PreservesAuthoritativeUpstreamCacheFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := newMockSettingRepo()
+	data, err := json.Marshal(PromptCacheSimulationSettings{
+		Enabled:            true,
+		SemanticFirst:      true,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	})
+	require.NoError(t, err)
+	repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+	cfg := &config.Config{}
+	svc := NewGatewayService(
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		&RateLimitService{},
+		nil,
+		cfg,
+		nil,
+		nil,
+		NewBillingService(cfg, nil),
+		nil,
+		&BillingCacheService{},
+		nil,
+		nil,
+		&DeferredService{},
+		nil,
+		nil,
+		nil,
+		NewSettingService(repo, cfg),
+		nil,
+	)
+
+	parsed, err := ParseGatewayRequest([]byte(`{
+		"model":"claude-sonnet-4",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],
+		"metadata":{"user_id":"user-1"}
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body: io.NopCloser(strings.NewReader(`{
+			"type":"message",
+			"model":"claude-sonnet-4",
+			"usage":{
+				"input_tokens":10,
+				"output_tokens":3,
+				"cache_creation_input_tokens":0,
+				"cache_read_input_tokens":0,
+				"cache_creation":{"ephemeral_5m_input_tokens":4}
+			}
+		}`)),
+	}
+
+	usage, err := svc.handleNonStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, "claude-sonnet-4", "claude-sonnet-4", parsed)
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	require.Zero(t, usage.CacheCreationInputTokens)
+	require.Equal(t, 4, usage.CacheCreation5mTokens)
+	require.Zero(t, usage.CacheReadInputTokens)
+	require.Equal(t, int64(0), gjson.Get(rec.Body.String(), "usage.cache_creation_input_tokens").Int())
+	require.Equal(t, int64(4), gjson.Get(rec.Body.String(), "usage.cache_creation.ephemeral_5m_input_tokens").Int())
+}
+

@@ -393,6 +393,135 @@
           </div>
         </div>
 
+        <!-- Prompt Cache Simulation Settings -->
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.promptCacheSimulation.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.promptCacheSimulation.description') }}
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div v-if="promptCacheSimulationLoading" class="flex items-center gap-2 text-gray-500">
+              <div class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"></div>
+              {{ t('common.loading') }}
+            </div>
+
+            <template v-else>
+              <div class="flex items-center justify-between">
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">{{
+                    t('admin.settings.promptCacheSimulation.enabled')
+                  }}</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.promptCacheSimulation.enabledHint') }}
+                  </p>
+                </div>
+                <Toggle v-model="promptCacheSimulationForm.enabled" />
+              </div>
+
+              <div
+                v-if="promptCacheSimulationForm.enabled"
+                class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700"
+              >
+                <div class="flex items-center justify-between">
+                  <div>
+                    <label class="text-sm font-medium text-gray-700 dark:text-gray-300">{{
+                      t('admin.settings.promptCacheSimulation.semanticFirst')
+                    }}</label>
+                    <p class="text-xs text-gray-500 dark:text-gray-400">
+                      {{ t('admin.settings.promptCacheSimulation.semanticFirstHint') }}
+                    </p>
+                  </div>
+                  <Toggle v-model="promptCacheSimulationForm.semantic_first" />
+                </div>
+
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.promptCacheSimulation.fallbackReadRatio') }}
+                  </label>
+                  <input
+                    v-model.number="promptCacheSimulationForm.fallback_read_ratio"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    class="input w-40"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.promptCacheSimulation.fallbackReadRatioHint') }}
+                  </p>
+                </div>
+
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.promptCacheSimulation.fallbackWriteRatio') }}
+                  </label>
+                  <input
+                    v-model.number="promptCacheSimulationForm.fallback_write_ratio"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    class="input w-40"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.promptCacheSimulation.fallbackWriteRatioHint') }}
+                  </p>
+                </div>
+
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.promptCacheSimulation.ttlSeconds') }}
+                  </label>
+                  <input
+                    v-model.number="promptCacheSimulationForm.ttl_seconds"
+                    type="number"
+                    min="1"
+                    class="input w-40"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.promptCacheSimulation.ttlSecondsHint') }}
+                  </p>
+                </div>
+              </div>
+
+              <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
+                <button
+                  type="button"
+                  @click="savePromptCacheSimulationSettings"
+                  :disabled="promptCacheSimulationSaving"
+                  class="btn btn-primary btn-sm"
+                >
+                  <svg
+                    v-if="promptCacheSimulationSaving"
+                    class="mr-1 h-4 w-4 animate-spin"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      class="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      stroke-width="4"
+                    ></circle>
+                    <path
+                      class="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    ></path>
+                  </svg>
+                  {{ promptCacheSimulationSaving ? t('common.saving') : t('common.save') }}
+                </button>
+              </div>
+            </template>
+          </div>
+        </div>
+
         <!-- Request Rectifier Settings -->
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
@@ -1883,6 +2012,17 @@ const streamTimeoutForm = reactive({
   threshold_window_minutes: 10
 })
 
+// Prompt Cache Simulation 状态
+const promptCacheSimulationLoading = ref(true)
+const promptCacheSimulationSaving = ref(false)
+const promptCacheSimulationForm = reactive({
+  enabled: true,
+  semantic_first: true,
+  fallback_read_ratio: 0.7,
+  fallback_write_ratio: 0.2,
+  ttl_seconds: 300
+})
+
 // Rectifier 状态
 const rectifierLoading = ref(true)
 const rectifierSaving = ref(false)
@@ -2477,6 +2617,39 @@ async function saveStreamTimeoutSettings() {
   }
 }
 
+async function loadPromptCacheSimulationSettings() {
+  promptCacheSimulationLoading.value = true
+  try {
+    const settings = await adminAPI.settings.getPromptCacheSimulationSettings()
+    Object.assign(promptCacheSimulationForm, settings)
+  } catch (error: any) {
+    console.error('Failed to load prompt cache simulation settings:', error)
+  } finally {
+    promptCacheSimulationLoading.value = false
+  }
+}
+
+async function savePromptCacheSimulationSettings() {
+  promptCacheSimulationSaving.value = true
+  try {
+    const updated = await adminAPI.settings.updatePromptCacheSimulationSettings({
+      enabled: promptCacheSimulationForm.enabled,
+      semantic_first: promptCacheSimulationForm.semantic_first,
+      fallback_read_ratio: promptCacheSimulationForm.fallback_read_ratio,
+      fallback_write_ratio: promptCacheSimulationForm.fallback_write_ratio,
+      ttl_seconds: promptCacheSimulationForm.ttl_seconds
+    })
+    Object.assign(promptCacheSimulationForm, updated)
+    appStore.showSuccess(t('admin.settings.promptCacheSimulation.saved'))
+  } catch (error: any) {
+    appStore.showError(
+      t('admin.settings.promptCacheSimulation.saveFailed') + ': ' + (error.message || t('common.unknownError'))
+    )
+  } finally {
+    promptCacheSimulationSaving.value = false
+  }
+}
+
 // Rectifier 方法
 async function loadRectifierSettings() {
   rectifierLoading.value = true
@@ -2567,6 +2740,7 @@ onMounted(() => {
   loadAdminApiKey()
   loadOverloadCooldownSettings()
   loadStreamTimeoutSettings()
+  loadPromptCacheSimulationSettings()
   loadRectifierSettings()
   loadBetaPolicySettings()
 })

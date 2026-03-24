@@ -559,9 +559,10 @@ type GatewayService struct {
 	userGroupRateSF       singleflight.Group
 	modelsListCache       *gocache.Cache
 	modelsListCacheTTL    time.Duration
-	settingService        *SettingService
-	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
-	debugModelRouting     atomic.Bool
+	settingService               *SettingService
+	promptCacheSimulationService *PromptCacheSimulationService
+	responseHeaderFilter         *responseheaders.CompiledHeaderFilter
+	debugModelRouting            atomic.Bool
 	debugClaudeMimic      atomic.Bool
 }
 
@@ -614,12 +615,13 @@ func NewGatewayService(
 		deferredService:      deferredService,
 		claudeTokenProvider:  claudeTokenProvider,
 		sessionLimitCache:    sessionLimitCache,
-		rpmCache:             rpmCache,
-		userGroupRateCache:   gocache.New(userGroupRateTTL, time.Minute),
-		settingService:       settingService,
-		modelsListCache:      gocache.New(modelsListTTL, time.Minute),
-		modelsListCacheTTL:   modelsListTTL,
-		responseHeaderFilter: compileResponseHeaderFilter(cfg),
+		rpmCache:                    rpmCache,
+		userGroupRateCache:          gocache.New(userGroupRateTTL, time.Minute),
+		settingService:              settingService,
+		promptCacheSimulationService: NewPromptCacheSimulationService(settingService),
+		modelsListCache:             gocache.New(modelsListTTL, time.Minute),
+		modelsListCacheTTL:          modelsListTTL,
+		responseHeaderFilter:        compileResponseHeaderFilter(cfg),
 	}
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		userGroupRateRepo,
@@ -634,6 +636,129 @@ func NewGatewayService(
 }
 
 // GenerateSessionHash 从预解析请求计算粘性会话 hash
+func (s *GatewayService) derivePromptCacheSimulationSessionIdentity(parsed *ParsedRequest) string {
+	if parsed == nil {
+		return ""
+	}
+	if parsed.MetadataUserID != "" {
+		return "metadata:" + strings.TrimSpace(parsed.MetadataUserID)
+	}
+	if parsed.SessionContext != nil {
+		return strings.Join([]string{
+			"session",
+			strings.TrimSpace(parsed.SessionContext.ClientIP),
+			strings.TrimSpace(parsed.SessionContext.UserAgent),
+			strconv.FormatInt(parsed.SessionContext.APIKeyID, 10),
+		}, "|")
+	}
+	if len(parsed.Body) > 0 {
+		return "body:" + promptCacheSimulationHashBytes(parsed.Body)
+	}
+	return ""
+}
+
+func (s *GatewayService) promptCacheSimulationRequestPath(c *gin.Context) string {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.Request.URL.Path)
+}
+
+func (s *GatewayService) applyPromptCacheSimulationToUsage(ctx context.Context, requestPath string, parsed *ParsedRequest, model string, usage *ClaudeUsage) bool {
+	if s == nil || s.promptCacheSimulationService == nil || usage == nil || parsed == nil {
+		return false
+	}
+	if usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0 || usage.CacheCreation5mTokens > 0 || usage.CacheCreation1hTokens > 0 {
+		return false
+	}
+	decision, ok := s.promptCacheSimulationService.Simulate(ctx, requestPath, parsed, s.derivePromptCacheSimulationSessionIdentity(parsed), model, usage.InputTokens)
+	if !ok || decision == nil || !decision.HasSimulation() {
+		return false
+	}
+	usage.InputTokens = decision.InputTokens
+	if decision.CacheCreationInputTokens > 0 {
+		usage.CacheCreationInputTokens = decision.CacheCreationInputTokens
+		usage.CacheCreation5mTokens = decision.CacheCreation5mTokens
+		usage.CacheCreation1hTokens = 0
+	}
+	if decision.CacheReadInputTokens > 0 {
+		usage.CacheReadInputTokens = decision.CacheReadInputTokens
+	}
+	return true
+}
+
+func (s *GatewayService) applyPromptCacheSimulationToUsageJSON(ctx context.Context, requestPath string, parsed *ParsedRequest, model string, usageObj map[string]any, usage *ClaudeUsage) bool {
+	if usageObj == nil || usage == nil {
+		return false
+	}
+	if !s.applyPromptCacheSimulationToUsage(ctx, requestPath, parsed, model, usage) {
+		return false
+	}
+	usageObj["input_tokens"] = float64(usage.InputTokens)
+	if usage.CacheCreationInputTokens > 0 {
+		usageObj["cache_creation_input_tokens"] = float64(usage.CacheCreationInputTokens)
+		usageObj["cache_creation"] = map[string]any{
+			"ephemeral_5m_input_tokens": float64(usage.CacheCreation5mTokens),
+		}
+	}
+	if usage.CacheReadInputTokens > 0 {
+		usageObj["cache_read_input_tokens"] = float64(usage.CacheReadInputTokens)
+	}
+	return true
+}
+
+func (s *GatewayService) applyPromptCacheSimulationToSSEEvent(ctx context.Context, requestPath string, parsed *ParsedRequest, model string, event map[string]any, currentUsage *ClaudeUsage) bool {
+	if event == nil || parsed == nil || currentUsage == nil {
+		return false
+	}
+	eventType, _ := event["type"].(string)
+	if eventType != "message_start" {
+		return false
+	}
+	msg, _ := event["message"].(map[string]any)
+	usageObj, _ := msg["usage"].(map[string]any)
+	if usageObj == nil {
+		return false
+	}
+
+	eventUsage := *currentUsage
+	if v, ok := parseSSEUsageInt(usageObj["input_tokens"]); ok {
+		eventUsage.InputTokens = v
+	}
+	if v, ok := parseSSEUsageInt(usageObj["cache_creation_input_tokens"]); ok {
+		eventUsage.CacheCreationInputTokens = v
+	}
+	if v, ok := parseSSEUsageInt(usageObj["cache_read_input_tokens"]); ok {
+		eventUsage.CacheReadInputTokens = v
+	}
+	if cc, ok := usageObj["cache_creation"].(map[string]any); ok {
+		if v, ok := parseSSEUsageInt(cc["ephemeral_5m_input_tokens"]); ok {
+			eventUsage.CacheCreation5mTokens = v
+		}
+		if v, ok := parseSSEUsageInt(cc["ephemeral_1h_input_tokens"]); ok {
+			eventUsage.CacheCreation1hTokens = v
+		}
+	}
+
+	changed := s.applyPromptCacheSimulationToUsageJSON(ctx, requestPath, parsed, model, usageObj, &eventUsage)
+	if changed {
+		*currentUsage = eventUsage
+	}
+	return changed
+}
+
+func (s *GatewayService) parsePromptCacheSimulationUsageMap(body []byte) map[string]any {
+	if len(body) == 0 {
+		return nil
+	}
+	var response map[string]any
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil
+	}
+	usageObj, _ := response["usage"].(map[string]any)
+	return usageObj
+}
+
 func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	if parsed == nil {
 		return ""
@@ -4520,7 +4645,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	var firstTokenMs *int
 	var clientDisconnect bool
 	if reqStream {
-		streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, reqModel, shouldMimicClaudeCode)
+		streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, reqModel, shouldMimicClaudeCode, parsed)
 		if err != nil {
 			if err.Error() == "have error in stream" {
 				return nil, &UpstreamFailoverError{
@@ -4533,7 +4658,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		firstTokenMs = streamResult.firstTokenMs
 		clientDisconnect = streamResult.clientDisconnect
 	} else {
-		usage, err = s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, reqModel)
+		usage, err = s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, reqModel, parsed)
 		if err != nil {
 			return nil, err
 		}
@@ -6501,7 +6626,7 @@ type streamingResult struct {
 	clientDisconnect bool // 客户端是否在流式传输过程中断开
 }
 
-func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string, mimicClaudeCode bool) (*streamingResult, error) {
+func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string, mimicClaudeCode bool, parsed *ParsedRequest) (*streamingResult, error) {
 	// 更新5h窗口状态
 	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 
@@ -6683,6 +6808,8 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				eventChanged = reconcileCachedTokens(u) || eventChanged
 			}
 		}
+
+		eventChanged = s.applyPromptCacheSimulationToSSEEvent(ctx, s.promptCacheSimulationRequestPath(c), parsed, originalModel, event, usage) || eventChanged
 
 		// Cache TTL Override: 重写 SSE 事件中的 cache_creation 分类
 		if account.IsCacheTTLOverrideEnabled() {
@@ -7070,7 +7197,7 @@ func rewriteCacheCreationJSON(usageObj map[string]any, target string) bool {
 	return true
 }
 
-func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*ClaudeUsage, error) {
+func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string, parsed *ParsedRequest) (*ClaudeUsage, error) {
 	// 更新5h窗口状态
 	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 
@@ -7113,6 +7240,18 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 			response.Usage.CacheReadInputTokens = int(cachedTokens)
 			if newBody, err := sjson.SetBytes(body, "usage.cache_read_input_tokens", cachedTokens); err == nil {
 				body = newBody
+			}
+		}
+	}
+
+	if usageObj := s.parsePromptCacheSimulationUsageMap(body); usageObj != nil {
+		if s.applyPromptCacheSimulationToUsageJSON(ctx, s.promptCacheSimulationRequestPath(c), parsed, originalModel, usageObj, &response.Usage) {
+			var responseMap map[string]any
+			if err := json.Unmarshal(body, &responseMap); err == nil {
+				responseMap["usage"] = usageObj
+				if replacedBody, err := json.Marshal(responseMap); err == nil {
+					body = replacedBody
+				}
 			}
 		}
 	}

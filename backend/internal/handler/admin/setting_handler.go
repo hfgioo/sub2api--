@@ -1448,6 +1448,69 @@ func (h *SettingHandler) TestSoraS3Connection(c *gin.Context) {
 	response.Success(c, gin.H{"message": "S3 连接成功"})
 }
 
+// GetPromptCacheSimulationSettings 获取 Prompt Cache Simulation 配置
+// GET /api/v1/admin/settings/prompt-cache-simulation
+func (h *SettingHandler) GetPromptCacheSimulationSettings(c *gin.Context) {
+	settings, err := h.settingService.GetPromptCacheSimulationSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.PromptCacheSimulationSettings{
+		Enabled:            settings.Enabled,
+		SemanticFirst:      settings.SemanticFirst,
+		FallbackReadRatio:  settings.FallbackReadRatio,
+		FallbackWriteRatio: settings.FallbackWriteRatio,
+		TTLSeconds:         settings.TTLSeconds,
+	})
+}
+
+// UpdatePromptCacheSimulationSettingsRequest 更新 Prompt Cache Simulation 配置请求
+type UpdatePromptCacheSimulationSettingsRequest struct {
+	Enabled            bool    `json:"enabled"`
+	SemanticFirst      bool    `json:"semantic_first"`
+	FallbackReadRatio  float64 `json:"fallback_read_ratio"`
+	FallbackWriteRatio float64 `json:"fallback_write_ratio"`
+	TTLSeconds         int     `json:"ttl_seconds"`
+}
+
+// UpdatePromptCacheSimulationSettings 更新 Prompt Cache Simulation 配置
+// PUT /api/v1/admin/settings/prompt-cache-simulation
+func (h *SettingHandler) UpdatePromptCacheSimulationSettings(c *gin.Context) {
+	var req UpdatePromptCacheSimulationSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	settings := &service.PromptCacheSimulationSettings{
+		Enabled:            req.Enabled,
+		SemanticFirst:      req.SemanticFirst,
+		FallbackReadRatio:  req.FallbackReadRatio,
+		FallbackWriteRatio: req.FallbackWriteRatio,
+		TTLSeconds:         req.TTLSeconds,
+	}
+	if err := h.settingService.SetPromptCacheSimulationSettings(c.Request.Context(), settings); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	updatedSettings, err := h.settingService.GetPromptCacheSimulationSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.PromptCacheSimulationSettings{
+		Enabled:            updatedSettings.Enabled,
+		SemanticFirst:      updatedSettings.SemanticFirst,
+		FallbackReadRatio:  updatedSettings.FallbackReadRatio,
+		FallbackWriteRatio: updatedSettings.FallbackWriteRatio,
+		TTLSeconds:         updatedSettings.TTLSeconds,
+	})
+}
+
 // GetRectifierSettings 获取请求整流器配置
 // GET /api/v1/admin/settings/rectifier
 func (h *SettingHandler) GetRectifierSettings(c *gin.Context) {
