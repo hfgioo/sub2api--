@@ -63,8 +63,7 @@ func (s *PromptCacheSimulationService) Simulate(ctx context.Context, requestPath
 		return nil, false
 	}
 	decisionTTL := time.Duration(settings.TTLSeconds) * time.Second
-	semanticSeed := buildPromptCacheSimulationConversationSeed(parsed)
-	useSemanticHighWater := settings.SemanticFirst && semanticSeed != ""
+	useSemanticHighWater := settings.SemanticFirst && promptCacheSimulationHasCacheControl(parsed)
 
 	cacheKey := buildPromptCacheSimulationCacheKey(scopeKey, parsed)
 	if cacheKey == "" {
@@ -157,20 +156,22 @@ func buildPromptCacheSimulationScopeKey(sessionIdentity, model string, parsed *P
 	if normalizedModel == "" {
 		return ""
 	}
-	conversationScope := strings.TrimSpace(buildPromptCacheSimulationConversationScopeSeed(parsed))
-	if conversationScope == "" {
-		return promptCacheSimulationHashString(effectiveSessionIdentity + "|" + normalizedModel)
-	}
-	return promptCacheSimulationHashString(strings.Join([]string{effectiveSessionIdentity, normalizedModel, conversationScope}, "|"))
+	// scope key must be stable across all turns of the same conversation;
+	// do NOT mix in message content or turn-level data here.
+	return promptCacheSimulationHashString(effectiveSessionIdentity + "|" + normalizedModel)
 }
 
 func buildPromptCacheSimulationCacheKey(scopeKey string, parsed *ParsedRequest) string {
 	if scopeKey == "" || parsed == nil {
 		return ""
 	}
-	if semanticKey, ok := buildPromptCacheSimulationSemanticKey(parsed); ok && semanticKey != "" {
+	// If the request has any cache_control markers, use the stable semantic key
+	// (scopeKey alone) so the same session always hits the same cache entry across
+	// growing conversations.
+	if promptCacheSimulationHasCacheControl(parsed) {
 		return "semantic|" + scopeKey
 	}
+	// No cache_control: fall back to content-hash keying.
 	fallbackKey := buildPromptCacheSimulationFallbackKey(parsed)
 	if fallbackKey == "" {
 		return ""
@@ -178,78 +179,40 @@ func buildPromptCacheSimulationCacheKey(scopeKey string, parsed *ParsedRequest) 
 	return "fallback|" + scopeKey + "|" + fallbackKey
 }
 
-func buildPromptCacheSimulationConversationSeed(parsed *ParsedRequest) string {
+func promptCacheSimulationHasCacheControl(parsed *ParsedRequest) bool {
 	if parsed == nil {
-		return ""
+		return false
 	}
-	semanticKey, ok := buildPromptCacheSimulationSemanticKey(parsed)
-	if !ok {
-		return ""
+	if promptCacheSimulationToolsHaveAnyBoundary(parsed.Body) {
+		return true
 	}
-	return semanticKey
+	if promptCacheSimulationSystemHasAnyBoundary(parsed.System) {
+		return true
+	}
+	return promptCacheSimulationMessagesHaveAnyCacheControl(parsed.Messages)
 }
 
-func buildPromptCacheSimulationConversationScopeSeed(parsed *ParsedRequest) string {
-	if parsed == nil {
-		return ""
+func promptCacheSimulationToolsHaveAnyBoundary(body []byte) bool {
+	if len(body) == 0 {
+		return false
 	}
-	var builder strings.Builder
-	appendPromptCacheSimulationTools(&builder, parsed.Body, false)
-	appendPromptCacheSimulationSystem(&builder, parsed.System, false)
-	if len(parsed.Messages) > 0 {
-		appendPromptCacheSimulationMessageRange(&builder, parsed.Messages, 0, 1)
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.Exists() || !tools.IsArray() {
+		return false
 	}
-	return builder.String()
+	found := false
+	tools.ForEach(func(_, value gjson.Result) bool {
+		if value.Get("cache_control.type").String() == "ephemeral" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
-func extractPromptCacheSimulationBaseConversationKey(parsed *ParsedRequest) string {
-	if parsed == nil {
-		return ""
-	}
-
-	var builder strings.Builder
-	appendPromptCacheSimulationTools(&builder, parsed.Body, false)
-	appendPromptCacheSimulationSystem(&builder, parsed.System, false)
-
-	boundary := promptCacheSimulationCacheBoundary(parsed)
-	if boundary > 0 {
-		appendPromptCacheSimulationMessageRange(&builder, parsed.Messages, 0, boundary)
-	}
-	return builder.String()
-}
-
-func promptCacheSimulationCacheBoundary(parsed *ParsedRequest) int {
-	if parsed == nil {
-		return 0
-	}
-	lastExplicit := -1
-	for i, msg := range parsed.Messages {
-		msgMap, ok := msg.(map[string]any)
-		if !ok {
-			continue
-		}
-		if promptCacheSimulationMessageHasCacheControl(msgMap["content"]) {
-			lastExplicit = i
-		}
-	}
-	if lastExplicit >= 0 {
-		return lastExplicit + 1
-	}
-	for i := len(parsed.Messages) - 1; i >= 0; i-- {
-		msgMap, ok := parsed.Messages[i].(map[string]any)
-		if !ok {
-			continue
-		}
-		role, _ := msgMap["role"].(string)
-		if role == "user" {
-			return i
-		}
-	}
-	return len(parsed.Messages)
-}
-
-func promptCacheSimulationMessageHasCacheControl(content any) bool {
-	parts, ok := content.([]any)
+func promptCacheSimulationSystemHasAnyBoundary(system any) bool {
+	parts, ok := system.([]any)
 	if !ok {
 		return false
 	}
@@ -265,32 +228,27 @@ func promptCacheSimulationMessageHasCacheControl(content any) bool {
 	return false
 }
 
-func appendPromptCacheSimulationMessageRange(builder *strings.Builder, messages []any, start, end int) {
-	if builder == nil {
-		return
-	}
-	if start < 0 {
-		start = 0
-	}
-	if end > len(messages) {
-		end = len(messages)
-	}
-	if start >= end {
-		return
-	}
-	for i := start; i < end; i++ {
-		msgMap, ok := messages[i].(map[string]any)
+func promptCacheSimulationMessagesHaveAnyCacheControl(messages []any) bool {
+	for _, msg := range messages {
+		msgMap, ok := msg.(map[string]any)
 		if !ok {
 			continue
 		}
-		builder.WriteString("role:")
-		if role, _ := msgMap["role"].(string); role != "" {
-			builder.WriteString(role)
+		parts, ok := msgMap["content"].([]any)
+		if !ok {
+			continue
 		}
-		builder.WriteString("\n")
-		builder.WriteString(extractPromptCacheSimulationTextValue(msgMap["content"]))
-		builder.WriteString("\n")
+		for _, part := range parts {
+			partMap, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, ok := partMap["cache_control"].(map[string]any); ok {
+				return true
+			}
+		}
 	}
+	return false
 }
 
 func derivePromptCacheSimulationSessionIdentity(parsed *ParsedRequest) string {
@@ -320,107 +278,6 @@ func buildPromptCacheSimulationFallbackKey(parsed *ParsedRequest) string {
 		return ""
 	}
 	return promptCacheSimulationHashString(cacheable)
-}
-
-func buildPromptCacheSimulationSemanticKey(parsed *ParsedRequest) (string, bool) {
-	baseKey := strings.TrimSpace(extractPromptCacheSimulationBaseConversationKey(parsed))
-	if baseKey == "" || !promptCacheSimulationSupportsSemanticHighWater(parsed) {
-		return "", false
-	}
-	return promptCacheSimulationHashString(baseKey), true
-}
-
-func promptCacheSimulationSupportsSemanticHighWater(parsed *ParsedRequest) bool {
-	if parsed == nil {
-		return false
-	}
-	if promptCacheSimulationToolsHavePartialBoundary(parsed.Body) {
-		return false
-	}
-	if promptCacheSimulationSystemHasPartialBoundary(parsed.System) {
-		return false
-	}
-	if promptCacheSimulationMessagesHavePartialBoundary(parsed.Messages) {
-		return false
-	}
-	return true
-}
-
-func promptCacheSimulationToolsHavePartialBoundary(body []byte) bool {
-	if len(body) == 0 {
-		return false
-	}
-	tools := gjson.GetBytes(body, "tools")
-	if !tools.Exists() || !tools.IsArray() {
-		return false
-	}
-	count := 0
-	lastExplicit := -1
-	tools.ForEach(func(_, value gjson.Result) bool {
-		if value.Get("cache_control.type").String() == "ephemeral" {
-			lastExplicit = count
-		}
-		count++
-		return true
-	})
-	return lastExplicit >= 0 && lastExplicit < count-1
-}
-
-func promptCacheSimulationSystemHasPartialBoundary(system any) bool {
-	parts, ok := system.([]any)
-	if !ok {
-		return false
-	}
-	lastExplicit := -1
-	for i, part := range parts {
-		partMap, ok := part.(map[string]any)
-		if !ok {
-			continue
-		}
-		if _, ok := partMap["cache_control"].(map[string]any); ok {
-			lastExplicit = i
-		}
-	}
-	return lastExplicit >= 0 && lastExplicit < len(parts)-1
-}
-
-func promptCacheSimulationMessagesHavePartialBoundary(messages []any) bool {
-	for _, msg := range messages {
-		msgMap, ok := msg.(map[string]any)
-		if !ok {
-			continue
-		}
-		parts, ok := msgMap["content"].([]any)
-		if !ok {
-			continue
-		}
-		lastExplicit := -1
-		for i, part := range parts {
-			partMap, ok := part.(map[string]any)
-			if !ok {
-				continue
-			}
-			if _, ok := partMap["cache_control"].(map[string]any); ok {
-				lastExplicit = i
-			}
-		}
-		if lastExplicit >= 0 && lastExplicit < len(parts)-1 {
-			return true
-		}
-	}
-	return false
-}
-
-func extractPromptCacheSimulationFullText(parsed *ParsedRequest) string {
-	if parsed == nil {
-		return ""
-	}
-
-	var builder strings.Builder
-	appendPromptCacheSimulationTools(&builder, parsed.Body, false)
-	appendPromptCacheSimulationSystem(&builder, parsed.System, false)
-	appendPromptCacheSimulationMessages(&builder, parsed.Messages, false)
-	return builder.String()
 }
 
 func extractPromptCacheSimulationCacheableText(parsed *ParsedRequest) string {
