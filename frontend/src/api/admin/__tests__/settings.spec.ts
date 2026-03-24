@@ -24,6 +24,7 @@ describe('admin settings prompt cache simulation api', () => {
     const expected = {
       enabled: true,
       semantic_first: true,
+      hit_ratio: 1,
       fallback_read_ratio: 0.7,
       fallback_write_ratio: 0.2,
       ttl_seconds: 300
@@ -42,6 +43,7 @@ describe('admin settings prompt cache simulation api', () => {
     const payload = {
       enabled: true,
       semantic_first: false,
+      hit_ratio: 0.85,
       fallback_read_ratio: 0.5,
       fallback_write_ratio: 0.25,
       ttl_seconds: 600

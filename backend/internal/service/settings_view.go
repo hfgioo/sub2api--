@@ -246,6 +246,7 @@ func DefaultOverloadCooldownSettings() *OverloadCooldownSettings {
 type PromptCacheSimulationSettings struct {
 	Enabled            bool    `json:"enabled"`
 	SemanticFirst      bool    `json:"semantic_first"`
+	HitRatio           float64 `json:"hit_ratio"`
 	FallbackReadRatio  float64 `json:"fallback_read_ratio"`
 	FallbackWriteRatio float64 `json:"fallback_write_ratio"`
 	TTLSeconds         int     `json:"ttl_seconds"`
@@ -256,6 +257,7 @@ func DefaultPromptCacheSimulationSettings() *PromptCacheSimulationSettings {
 	return &PromptCacheSimulationSettings{
 		Enabled:            false,
 		SemanticFirst:      true,
+		HitRatio:           1,
 		FallbackReadRatio:  0.7,
 		FallbackWriteRatio: 0.2,
 		TTLSeconds:         300,

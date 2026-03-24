@@ -31,6 +31,10 @@ type PromptCacheSimulationService struct {
 	cache          *gocache.Cache
 }
 
+type promptCacheSimulationCacheEntry struct {
+	CachedTokens int
+}
+
 func NewPromptCacheSimulationService(settingService *SettingService) *PromptCacheSimulationService {
 	return &PromptCacheSimulationService{
 		settingService: settingService,
@@ -59,73 +63,234 @@ func (s *PromptCacheSimulationService) Simulate(ctx context.Context, requestPath
 		return nil, false
 	}
 	decisionTTL := time.Duration(settings.TTLSeconds) * time.Second
+	semanticSeed := buildPromptCacheSimulationConversationSeed(parsed)
+	useSemanticHighWater := settings.SemanticFirst && semanticSeed != ""
 
-	if settings.SemanticFirst {
-		if semanticKey, ok := buildPromptCacheSimulationSemanticKey(parsed); ok {
-			cacheKey := "semantic|" + scopeKey + "|" + semanticKey
-			if _, hit := s.cache.Get(cacheKey); hit {
-				s.cache.Set(cacheKey, true, decisionTTL)
-				return &PromptCacheSimulationDecision{
-					InputTokens:          0,
-					CacheReadInputTokens: inputTokens,
-				}, true
-			}
-			s.cache.Set(cacheKey, true, decisionTTL)
-			return &PromptCacheSimulationDecision{
-				InputTokens:              0,
-				CacheCreationInputTokens: inputTokens,
-				CacheCreation5mTokens:    inputTokens,
-			}, true
-		}
-	}
-
-	fallbackKey := buildPromptCacheSimulationFallbackKey(parsed)
-	if fallbackKey == "" {
+	cacheKey := buildPromptCacheSimulationCacheKey(scopeKey, parsed)
+	if cacheKey == "" {
 		return nil, false
 	}
-	cacheKey := "fallback|" + scopeKey + "|" + fallbackKey
-	if _, hit := s.cache.Get(cacheKey); hit {
-		readTokens := promptCacheSimulationRatioTokens(inputTokens, settings.FallbackReadRatio)
-		if readTokens <= 0 {
+
+	if useSemanticHighWater {
+		cacheableTokens := promptCacheSimulationRatioTokens(inputTokens, settings.HitRatio)
+		if cacheableTokens <= 0 {
 			return nil, false
 		}
-		remainingInputTokens := inputTokens - readTokens
-		if remainingInputTokens < 0 {
-			remainingInputTokens = 0
+		uncachedTokens := inputTokens - cacheableTokens
+		if uncachedTokens < 0 {
+			uncachedTokens = 0
 		}
-		s.cache.Set(cacheKey, true, decisionTTL)
+
+		cachedTokens := 0
+		if cached, hit := s.cache.Get(cacheKey); hit {
+			switch entry := cached.(type) {
+			case promptCacheSimulationCacheEntry:
+				cachedTokens = entry.CachedTokens
+			case *promptCacheSimulationCacheEntry:
+				if entry != nil {
+					cachedTokens = entry.CachedTokens
+				}
+			}
+			if cachedTokens < 0 {
+				cachedTokens = 0
+			}
+			if cachedTokens > cacheableTokens {
+				cachedTokens = cacheableTokens
+			}
+		}
+
+		cacheCreationTokens := cacheableTokens - cachedTokens
+		if cacheCreationTokens < 0 {
+			cacheCreationTokens = 0
+		}
+
+		s.cache.Set(cacheKey, promptCacheSimulationCacheEntry{CachedTokens: cacheableTokens}, decisionTTL)
+		if cachedTokens == 0 && cacheCreationTokens == 0 {
+			return nil, false
+		}
+
 		return &PromptCacheSimulationDecision{
-			InputTokens:          remainingInputTokens,
-			CacheReadInputTokens: readTokens,
+			InputTokens:              uncachedTokens,
+			CacheCreationInputTokens: cacheCreationTokens,
+			CacheReadInputTokens:     cachedTokens,
+			CacheCreation5mTokens:    cacheCreationTokens,
 		}, true
 	}
 
-	createTokens := promptCacheSimulationRatioTokens(inputTokens, settings.FallbackWriteRatio)
-	if createTokens <= 0 {
+	cacheReadTokens := 0
+	cacheCreationTokens := 0
+	if _, hit := s.cache.Get(cacheKey); hit {
+		cacheReadTokens = promptCacheSimulationRatioTokens(inputTokens, settings.FallbackReadRatio*settings.HitRatio)
+		s.cache.Set(cacheKey, promptCacheSimulationCacheEntry{CachedTokens: cacheReadTokens}, decisionTTL)
+	} else {
+		cacheCreationTokens = promptCacheSimulationRatioTokens(inputTokens, settings.FallbackWriteRatio*settings.HitRatio)
+		s.cache.Set(cacheKey, promptCacheSimulationCacheEntry{CachedTokens: cacheCreationTokens}, decisionTTL)
+	}
+	uncachedTokens := inputTokens - cacheReadTokens - cacheCreationTokens
+	if uncachedTokens < 0 {
+		uncachedTokens = 0
+	}
+	if cacheReadTokens == 0 && cacheCreationTokens == 0 {
 		return nil, false
 	}
-	remainingInputTokens := inputTokens - createTokens
-	if remainingInputTokens < 0 {
-		remainingInputTokens = 0
-	}
-	s.cache.Set(cacheKey, true, decisionTTL)
+
 	return &PromptCacheSimulationDecision{
-		InputTokens:              remainingInputTokens,
-		CacheCreationInputTokens: createTokens,
-		CacheCreation5mTokens:    createTokens,
+		InputTokens:              uncachedTokens,
+		CacheCreationInputTokens: cacheCreationTokens,
+		CacheReadInputTokens:     cacheReadTokens,
+		CacheCreation5mTokens:    cacheCreationTokens,
 	}, true
 }
 
 func buildPromptCacheSimulationScopeKey(sessionIdentity, model string, parsed *ParsedRequest) string {
-	sessionIdentity = strings.TrimSpace(sessionIdentity)
-	model = strings.TrimSpace(model)
-	if sessionIdentity == "" && parsed != nil {
-		sessionIdentity = derivePromptCacheSimulationSessionIdentity(parsed)
+	effectiveSessionIdentity := strings.TrimSpace(sessionIdentity)
+	if effectiveSessionIdentity == "" {
+		effectiveSessionIdentity = strings.TrimSpace(derivePromptCacheSimulationSessionIdentity(parsed))
 	}
-	if sessionIdentity == "" {
+	if effectiveSessionIdentity == "" {
 		return ""
 	}
-	return sessionIdentity + "|model:" + model
+	normalizedModel := strings.ToLower(strings.TrimSpace(model))
+	if normalizedModel == "" && parsed != nil {
+		normalizedModel = strings.ToLower(strings.TrimSpace(parsed.Model))
+	}
+	if normalizedModel == "" {
+		return ""
+	}
+	conversationScope := strings.TrimSpace(buildPromptCacheSimulationConversationScopeSeed(parsed))
+	if conversationScope == "" {
+		return promptCacheSimulationHashString(effectiveSessionIdentity + "|" + normalizedModel)
+	}
+	return promptCacheSimulationHashString(strings.Join([]string{effectiveSessionIdentity, normalizedModel, conversationScope}, "|"))
+}
+
+func buildPromptCacheSimulationCacheKey(scopeKey string, parsed *ParsedRequest) string {
+	if scopeKey == "" || parsed == nil {
+		return ""
+	}
+	if semanticKey, ok := buildPromptCacheSimulationSemanticKey(parsed); ok && semanticKey != "" {
+		return "semantic|" + scopeKey
+	}
+	fallbackKey := buildPromptCacheSimulationFallbackKey(parsed)
+	if fallbackKey == "" {
+		return ""
+	}
+	return "fallback|" + scopeKey + "|" + fallbackKey
+}
+
+func buildPromptCacheSimulationConversationSeed(parsed *ParsedRequest) string {
+	if parsed == nil {
+		return ""
+	}
+	semanticKey, ok := buildPromptCacheSimulationSemanticKey(parsed)
+	if !ok {
+		return ""
+	}
+	return semanticKey
+}
+
+func buildPromptCacheSimulationConversationScopeSeed(parsed *ParsedRequest) string {
+	if parsed == nil {
+		return ""
+	}
+	var builder strings.Builder
+	appendPromptCacheSimulationTools(&builder, parsed.Body, false)
+	appendPromptCacheSimulationSystem(&builder, parsed.System, false)
+	if len(parsed.Messages) > 0 {
+		appendPromptCacheSimulationMessageRange(&builder, parsed.Messages, 0, 1)
+	}
+	return builder.String()
+}
+
+func extractPromptCacheSimulationBaseConversationKey(parsed *ParsedRequest) string {
+	if parsed == nil {
+		return ""
+	}
+
+	var builder strings.Builder
+	appendPromptCacheSimulationTools(&builder, parsed.Body, false)
+	appendPromptCacheSimulationSystem(&builder, parsed.System, false)
+
+	boundary := promptCacheSimulationCacheBoundary(parsed)
+	if boundary > 0 {
+		appendPromptCacheSimulationMessageRange(&builder, parsed.Messages, 0, boundary)
+	}
+	return builder.String()
+}
+
+func promptCacheSimulationCacheBoundary(parsed *ParsedRequest) int {
+	if parsed == nil {
+		return 0
+	}
+	lastExplicit := -1
+	for i, msg := range parsed.Messages {
+		msgMap, ok := msg.(map[string]any)
+		if !ok {
+			continue
+		}
+		if promptCacheSimulationMessageHasCacheControl(msgMap["content"]) {
+			lastExplicit = i
+		}
+	}
+	if lastExplicit >= 0 {
+		return lastExplicit + 1
+	}
+	for i := len(parsed.Messages) - 1; i >= 0; i-- {
+		msgMap, ok := parsed.Messages[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := msgMap["role"].(string)
+		if role == "user" {
+			return i
+		}
+	}
+	return len(parsed.Messages)
+}
+
+func promptCacheSimulationMessageHasCacheControl(content any) bool {
+	parts, ok := content.([]any)
+	if !ok {
+		return false
+	}
+	for _, part := range parts {
+		partMap, ok := part.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, ok := partMap["cache_control"].(map[string]any); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func appendPromptCacheSimulationMessageRange(builder *strings.Builder, messages []any, start, end int) {
+	if builder == nil {
+		return
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end > len(messages) {
+		end = len(messages)
+	}
+	if start >= end {
+		return
+	}
+	for i := start; i < end; i++ {
+		msgMap, ok := messages[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		builder.WriteString("role:")
+		if role, _ := msgMap["role"].(string); role != "" {
+			builder.WriteString(role)
+		}
+		builder.WriteString("\n")
+		builder.WriteString(extractPromptCacheSimulationTextValue(msgMap["content"]))
+		builder.WriteString("\n")
+	}
 }
 
 func derivePromptCacheSimulationSessionIdentity(parsed *ParsedRequest) string {
@@ -158,12 +323,92 @@ func buildPromptCacheSimulationFallbackKey(parsed *ParsedRequest) string {
 }
 
 func buildPromptCacheSimulationSemanticKey(parsed *ParsedRequest) (string, bool) {
-	full := strings.TrimSpace(extractPromptCacheSimulationFullText(parsed))
-	cacheable := strings.TrimSpace(extractPromptCacheSimulationCacheableText(parsed))
-	if full == "" || cacheable == "" || full != cacheable {
+	baseKey := strings.TrimSpace(extractPromptCacheSimulationBaseConversationKey(parsed))
+	if baseKey == "" || !promptCacheSimulationSupportsSemanticHighWater(parsed) {
 		return "", false
 	}
-	return promptCacheSimulationHashString(full), true
+	return promptCacheSimulationHashString(baseKey), true
+}
+
+func promptCacheSimulationSupportsSemanticHighWater(parsed *ParsedRequest) bool {
+	if parsed == nil {
+		return false
+	}
+	if promptCacheSimulationToolsHavePartialBoundary(parsed.Body) {
+		return false
+	}
+	if promptCacheSimulationSystemHasPartialBoundary(parsed.System) {
+		return false
+	}
+	if promptCacheSimulationMessagesHavePartialBoundary(parsed.Messages) {
+		return false
+	}
+	return true
+}
+
+func promptCacheSimulationToolsHavePartialBoundary(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.Exists() || !tools.IsArray() {
+		return false
+	}
+	count := 0
+	lastExplicit := -1
+	tools.ForEach(func(_, value gjson.Result) bool {
+		if value.Get("cache_control.type").String() == "ephemeral" {
+			lastExplicit = count
+		}
+		count++
+		return true
+	})
+	return lastExplicit >= 0 && lastExplicit < count-1
+}
+
+func promptCacheSimulationSystemHasPartialBoundary(system any) bool {
+	parts, ok := system.([]any)
+	if !ok {
+		return false
+	}
+	lastExplicit := -1
+	for i, part := range parts {
+		partMap, ok := part.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, ok := partMap["cache_control"].(map[string]any); ok {
+			lastExplicit = i
+		}
+	}
+	return lastExplicit >= 0 && lastExplicit < len(parts)-1
+}
+
+func promptCacheSimulationMessagesHavePartialBoundary(messages []any) bool {
+	for _, msg := range messages {
+		msgMap, ok := msg.(map[string]any)
+		if !ok {
+			continue
+		}
+		parts, ok := msgMap["content"].([]any)
+		if !ok {
+			continue
+		}
+		lastExplicit := -1
+		for i, part := range parts {
+			partMap, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, ok := partMap["cache_control"].(map[string]any); ok {
+				lastExplicit = i
+			}
+		}
+		if lastExplicit >= 0 && lastExplicit < len(parts)-1 {
+			return true
+		}
+	}
+	return false
 }
 
 func extractPromptCacheSimulationFullText(parsed *ParsedRequest) string {

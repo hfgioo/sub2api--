@@ -19,6 +19,7 @@ func TestGetPromptCacheSimulationSettings_DefaultsWhenNotSet(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, settings.Enabled)
 	require.True(t, settings.SemanticFirst)
+	require.InDelta(t, 1.0, settings.HitRatio, 0.000001)
 	require.InDelta(t, 0.7, settings.FallbackReadRatio, 0.000001)
 	require.InDelta(t, 0.2, settings.FallbackWriteRatio, 0.000001)
 	require.Equal(t, 300, settings.TTLSeconds)
@@ -29,6 +30,7 @@ func TestGetPromptCacheSimulationSettings_ReadsFromDB(t *testing.T) {
 	data, _ := json.Marshal(PromptCacheSimulationSettings{
 		Enabled:            true,
 		SemanticFirst:      false,
+		HitRatio:           0.9,
 		FallbackReadRatio:  0.55,
 		FallbackWriteRatio: 0.15,
 		TTLSeconds:         600,
@@ -40,6 +42,7 @@ func TestGetPromptCacheSimulationSettings_ReadsFromDB(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, settings.Enabled)
 	require.False(t, settings.SemanticFirst)
+	require.InDelta(t, 0.9, settings.HitRatio, 0.000001)
 	require.InDelta(t, 0.55, settings.FallbackReadRatio, 0.000001)
 	require.InDelta(t, 0.15, settings.FallbackWriteRatio, 0.000001)
 	require.Equal(t, 600, settings.TTLSeconds)
@@ -50,6 +53,7 @@ func TestGetPromptCacheSimulationSettings_NormalizesInvalidStoredValues(t *testi
 	data, _ := json.Marshal(PromptCacheSimulationSettings{
 		Enabled:            true,
 		SemanticFirst:      true,
+		HitRatio:           1.4,
 		FallbackReadRatio:  1.4,
 		FallbackWriteRatio: 0.6,
 		TTLSeconds:         0,
@@ -59,6 +63,7 @@ func TestGetPromptCacheSimulationSettings_NormalizesInvalidStoredValues(t *testi
 
 	settings, err := svc.GetPromptCacheSimulationSettings(context.Background())
 	require.NoError(t, err)
+	require.InDelta(t, 1.0, settings.HitRatio, 0.000001)
 	require.InDelta(t, 1.0, settings.FallbackReadRatio, 0.000001)
 	require.InDelta(t, 0.0, settings.FallbackWriteRatio, 0.000001)
 	require.Equal(t, 60, settings.TTLSeconds)
@@ -73,7 +78,23 @@ func TestGetPromptCacheSimulationSettings_InvalidJSON_ReturnsDefaults(t *testing
 	require.NoError(t, err)
 	require.False(t, settings.Enabled)
 	require.True(t, settings.SemanticFirst)
+	require.InDelta(t, 1.0, settings.HitRatio, 0.000001)
 	require.InDelta(t, 0.7, settings.FallbackReadRatio, 0.000001)
+	require.InDelta(t, 0.2, settings.FallbackWriteRatio, 0.000001)
+	require.Equal(t, 300, settings.TTLSeconds)
+}
+
+func TestGetPromptCacheSimulationSettings_MissingHitRatioUsesDefault(t *testing.T) {
+	repo := newMockSettingRepo()
+	repo.data[SettingKeyPromptCacheSimulationSettings] = `{"enabled":true,"semantic_first":true,"fallback_read_ratio":0.6,"fallback_write_ratio":0.2,"ttl_seconds":300}`
+	svc := NewSettingService(repo, &config.Config{})
+
+	settings, err := svc.GetPromptCacheSimulationSettings(context.Background())
+	require.NoError(t, err)
+	require.True(t, settings.Enabled)
+	require.True(t, settings.SemanticFirst)
+	require.InDelta(t, 1.0, settings.HitRatio, 0.000001)
+	require.InDelta(t, 0.6, settings.FallbackReadRatio, 0.000001)
 	require.InDelta(t, 0.2, settings.FallbackWriteRatio, 0.000001)
 	require.Equal(t, 300, settings.TTLSeconds)
 }
@@ -85,6 +106,7 @@ func TestSetPromptCacheSimulationSettings_Success(t *testing.T) {
 	err := svc.SetPromptCacheSimulationSettings(context.Background(), &PromptCacheSimulationSettings{
 		Enabled:            true,
 		SemanticFirst:      true,
+		HitRatio:           0.85,
 		FallbackReadRatio:  0.6,
 		FallbackWriteRatio: 0.25,
 		TTLSeconds:         300,
@@ -95,6 +117,7 @@ func TestSetPromptCacheSimulationSettings_Success(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, settings.Enabled)
 	require.True(t, settings.SemanticFirst)
+	require.InDelta(t, 0.85, settings.HitRatio, 0.000001)
 	require.InDelta(t, 0.6, settings.FallbackReadRatio, 0.000001)
 	require.InDelta(t, 0.25, settings.FallbackWriteRatio, 0.000001)
 	require.Equal(t, 300, settings.TTLSeconds)
@@ -119,6 +142,23 @@ func TestSetPromptCacheSimulationSettings_RejectsOutOfRangeReadRatio(t *testing.
 		})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "fallback_read_ratio must be between 0-1")
+	}
+}
+
+func TestSetPromptCacheSimulationSettings_RejectsOutOfRangeHitRatio(t *testing.T) {
+	svc := NewSettingService(newMockSettingRepo(), &config.Config{})
+
+	for _, ratio := range []float64{-0.1, 1.1} {
+		err := svc.SetPromptCacheSimulationSettings(context.Background(), &PromptCacheSimulationSettings{
+			Enabled:            true,
+			SemanticFirst:      true,
+			HitRatio:           ratio,
+			FallbackReadRatio:  0.5,
+			FallbackWriteRatio: 0.2,
+			TTLSeconds:         300,
+		})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "hit_ratio must be between 0-1")
 	}
 }
 
@@ -172,6 +212,7 @@ func TestDefaultPromptCacheSimulationSettings(t *testing.T) {
 	settings := DefaultPromptCacheSimulationSettings()
 	require.False(t, settings.Enabled)
 	require.True(t, settings.SemanticFirst)
+	require.InDelta(t, 1.0, settings.HitRatio, 0.000001)
 	require.InDelta(t, 0.7, settings.FallbackReadRatio, 0.000001)
 	require.InDelta(t, 0.2, settings.FallbackWriteRatio, 0.000001)
 	require.Equal(t, 300, settings.TTLSeconds)
@@ -181,6 +222,7 @@ func TestPromptCacheSimulationSettings_JSONRoundTrip(t *testing.T) {
 	original := PromptCacheSimulationSettings{
 		Enabled:            true,
 		SemanticFirst:      false,
+		HitRatio:           0.8,
 		FallbackReadRatio:  0.45,
 		FallbackWriteRatio: 0.35,
 		TTLSeconds:         900,
@@ -196,11 +238,13 @@ func TestPromptCacheSimulationSettings_JSONRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &raw))
 	_, hasEnabled := raw["enabled"]
 	_, hasSemanticFirst := raw["semantic_first"]
+	_, hasHitRatio := raw["hit_ratio"]
 	_, hasReadRatio := raw["fallback_read_ratio"]
 	_, hasWriteRatio := raw["fallback_write_ratio"]
 	_, hasTTLSeconds := raw["ttl_seconds"]
 	require.True(t, hasEnabled)
 	require.True(t, hasSemanticFirst)
+	require.True(t, hasHitRatio)
 	require.True(t, hasReadRatio)
 	require.True(t, hasWriteRatio)
 	require.True(t, hasTTLSeconds)

@@ -440,6 +440,23 @@
 
                 <div>
                   <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.promptCacheSimulation.hitRatio') }}
+                  </label>
+                  <input
+                    v-model.number="promptCacheSimulationForm.hit_ratio"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    class="input w-40"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.promptCacheSimulation.hitRatioHint') }}
+                  </p>
+                </div>
+
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
                     {{ t('admin.settings.promptCacheSimulation.fallbackReadRatio') }}
                   </label>
                   <input
@@ -2093,6 +2110,7 @@ const promptCacheSimulationSaving = ref(false)
 const promptCacheSimulationForm = reactive({
   enabled: true,
   semantic_first: true,
+  hit_ratio: 1,
   fallback_read_ratio: 0.7,
   fallback_write_ratio: 0.2,
   ttl_seconds: 300
@@ -2721,6 +2739,7 @@ async function savePromptCacheSimulationSettings() {
     const updated = await adminAPI.settings.updatePromptCacheSimulationSettings({
       enabled: promptCacheSimulationForm.enabled,
       semantic_first: promptCacheSimulationForm.semantic_first,
+      hit_ratio: promptCacheSimulationForm.hit_ratio,
       fallback_read_ratio: promptCacheSimulationForm.fallback_read_ratio,
       fallback_write_ratio: promptCacheSimulationForm.fallback_write_ratio,
       ttl_seconds: promptCacheSimulationForm.ttl_seconds

@@ -1058,6 +1058,7 @@ func TestParseClaudeUsageFromResponseBody(t *testing.T) {
 		data, err := json.Marshal(PromptCacheSimulationSettings{
 			Enabled:            true,
 			SemanticFirst:      true,
+			HitRatio:           1,
 			FallbackReadRatio:  0.7,
 			FallbackWriteRatio: 0.2,
 			TTLSeconds:         300,
@@ -1113,6 +1114,7 @@ func TestParseClaudeUsageFromResponseBody(t *testing.T) {
 		data, err := json.Marshal(PromptCacheSimulationSettings{
 			Enabled:            true,
 			SemanticFirst:      true,
+			HitRatio:           1,
 			FallbackReadRatio:  0.7,
 			FallbackWriteRatio: 0.2,
 			TTLSeconds:         300,

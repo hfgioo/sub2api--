@@ -4442,6 +4442,8 @@ export default {
         enabledHint: 'Applies semantic-first simulation with ratio fallback on the Anthropic-compatible messages endpoint.',
         semanticFirst: 'Prefer Semantic Simulation',
         semanticFirstHint: 'Use semantic matching first, then fall back to configured ratios only when semantic simulation is unavailable.',
+        hitRatio: 'Hit Ratio Factor',
+        hitRatioHint: 'Controls how much of each round is considered eligible for cache-layer splitting; 1 means use as much upstream input as possible.',
         fallbackReadRatio: 'Fallback Read Ratio',
         fallbackReadRatioHint: 'Ratio used for cache_read_input_tokens on fallback cache hits.',
         fallbackWriteRatio: 'Fallback Write Ratio',

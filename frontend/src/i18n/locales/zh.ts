@@ -4606,6 +4606,8 @@ export default {
         enabledHint: '仅作用于 Anthropic 兼容的 messages 接口，优先走语义模拟，失败时再回退到比例模拟。',
         semanticFirst: '优先语义模拟',
         semanticFirstHint: '先尝试按语义匹配缓存命中，只有无法可靠模拟时才使用回退比例。',
+        hitRatio: '命中率系数',
+        hitRatioHint: '控制每轮对话中可视为已进入缓存层的输入比例，1 表示尽量全部参与缓存拆分。',
         fallbackReadRatio: '回退读取比例',
         fallbackReadRatioHint: '回退命中时用于 cache_read_input_tokens 的比例。',
         fallbackWriteRatio: '回退写入比例',

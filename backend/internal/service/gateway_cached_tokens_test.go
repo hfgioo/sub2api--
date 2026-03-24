@@ -268,6 +268,7 @@ func TestPromptCacheSimulationService_SemanticFirstFullPromptCreatesThenReads(t 
 	data, err := json.Marshal(PromptCacheSimulationSettings{
 		Enabled:            true,
 		SemanticFirst:      true,
+		HitRatio:           1,
 		FallbackReadRatio:  0.7,
 		FallbackWriteRatio: 0.2,
 		TTLSeconds:         300,
@@ -305,6 +306,7 @@ func TestPromptCacheSimulationService_FallbackUsesRatiosWhenSemanticUnavailable(
 	data, err := json.Marshal(PromptCacheSimulationSettings{
 		Enabled:            true,
 		SemanticFirst:      true,
+		HitRatio:           1,
 		FallbackReadRatio:  0.7,
 		FallbackWriteRatio: 0.2,
 		TTLSeconds:         300,
@@ -337,11 +339,82 @@ func TestPromptCacheSimulationService_FallbackUsesRatiosWhenSemanticUnavailable(
 	require.Equal(t, 70, second.CacheReadInputTokens)
 }
 
+func TestPromptCacheSimulationService_SemanticHitRatioScalesHighWater(t *testing.T) {
+	repo := newMockSettingRepo()
+	data, err := json.Marshal(PromptCacheSimulationSettings{
+		Enabled:            true,
+		SemanticFirst:      true,
+		HitRatio:           0.5,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	})
+	require.NoError(t, err)
+	repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+	settingSvc := NewSettingService(repo, nil)
+	simSvc := NewPromptCacheSimulationService(settingSvc)
+	parsed, err := ParseGatewayRequest([]byte(`{
+		"model":"claude-sonnet-4",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}]
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+	parsed.MetadataUserID = "user-1"
+
+	first, ok := simSvc.Simulate(context.Background(), "/v1/messages", parsed, "metadata:user-1", "claude-sonnet-4", 100)
+	require.True(t, ok)
+	require.Equal(t, 50, first.InputTokens)
+	require.Equal(t, 50, first.CacheCreationInputTokens)
+	require.Zero(t, first.CacheReadInputTokens)
+
+	second, ok := simSvc.Simulate(context.Background(), "/v1/messages", parsed, "metadata:user-1", "claude-sonnet-4", 100)
+	require.True(t, ok)
+	require.Equal(t, 50, second.InputTokens)
+	require.Zero(t, second.CacheCreationInputTokens)
+	require.Equal(t, 50, second.CacheReadInputTokens)
+}
+
+func TestPromptCacheSimulationService_FallbackHitRatioScalesReadAndWrite(t *testing.T) {
+	repo := newMockSettingRepo()
+	data, err := json.Marshal(PromptCacheSimulationSettings{
+		Enabled:            true,
+		SemanticFirst:      false,
+		HitRatio:           0.5,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	})
+	require.NoError(t, err)
+	repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+	settingSvc := NewSettingService(repo, nil)
+	simSvc := NewPromptCacheSimulationService(settingSvc)
+	parsed, err := ParseGatewayRequest([]byte(`{
+		"model":"claude-sonnet-4",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}]
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+	parsed.MetadataUserID = "user-1"
+
+	first, ok := simSvc.Simulate(context.Background(), "/v1/messages", parsed, "metadata:user-1", "claude-sonnet-4", 100)
+	require.True(t, ok)
+	require.Equal(t, 90, first.InputTokens)
+	require.Equal(t, 10, first.CacheCreationInputTokens)
+	require.Zero(t, first.CacheReadInputTokens)
+
+	second, ok := simSvc.Simulate(context.Background(), "/v1/messages", parsed, "metadata:user-1", "claude-sonnet-4", 100)
+	require.True(t, ok)
+	require.Equal(t, 65, second.InputTokens)
+	require.Zero(t, second.CacheCreationInputTokens)
+	require.Equal(t, 35, second.CacheReadInputTokens)
+}
+
 func TestPromptCacheSimulationService_IsolatedBySessionAndModel(t *testing.T) {
 	repo := newMockSettingRepo()
 	data, err := json.Marshal(PromptCacheSimulationSettings{
 		Enabled:            true,
 		SemanticFirst:      true,
+		HitRatio:           1,
 		FallbackReadRatio:  0.7,
 		FallbackWriteRatio: 0.2,
 		TTLSeconds:         300,
@@ -378,11 +451,63 @@ func TestPromptCacheSimulationService_IsolatedBySessionAndModel(t *testing.T) {
 	require.Equal(t, 50, otherModel.CacheCreationInputTokens)
 }
 
+func TestPromptCacheSimulationService_ReadsPreviousPrefixWhenConversationGrows(t *testing.T) {
+	repo := newMockSettingRepo()
+	data, err := json.Marshal(PromptCacheSimulationSettings{
+		Enabled:            true,
+		SemanticFirst:      true,
+		HitRatio:           1,
+		FallbackReadRatio:  0.7,
+		FallbackWriteRatio: 0.2,
+		TTLSeconds:         300,
+	})
+	require.NoError(t, err)
+	repo.data[SettingKeyPromptCacheSimulationSettings] = string(data)
+
+	settingSvc := NewSettingService(repo, nil)
+	simSvc := NewPromptCacheSimulationService(settingSvc)
+
+	firstParsed, err := ParseGatewayRequest([]byte(`{
+		"model":"claude-sonnet-4",
+		"messages":[
+			{"role":"user","content":[{"type":"text","text":"A"}]},
+			{"role":"assistant","content":[{"type":"text","text":"B"}]},
+			{"role":"user","content":[{"type":"text","text":"C","cache_control":{"type":"ephemeral"}}]}
+		]
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+
+	secondParsed, err := ParseGatewayRequest([]byte(`{
+		"model":"claude-sonnet-4",
+		"messages":[
+			{"role":"user","content":[{"type":"text","text":"A"}]},
+			{"role":"assistant","content":[{"type":"text","text":"B"}]},
+			{"role":"user","content":[{"type":"text","text":"C"}]},
+			{"role":"assistant","content":[{"type":"text","text":"D"}]},
+			{"role":"user","content":[{"type":"text","text":"E","cache_control":{"type":"ephemeral"}}]}
+		]
+	}`), PlatformAnthropic)
+	require.NoError(t, err)
+
+	first, ok := simSvc.Simulate(context.Background(), "/v1/messages", firstParsed, "metadata:user-1", "claude-sonnet-4", 1000)
+	require.True(t, ok)
+	require.Equal(t, 1000, first.CacheCreationInputTokens)
+	require.Zero(t, first.CacheReadInputTokens)
+
+	second, ok := simSvc.Simulate(context.Background(), "/v1/messages", secondParsed, "metadata:user-1", "claude-sonnet-4", 1500)
+	require.True(t, ok)
+	require.Greater(t, second.CacheReadInputTokens, 0)
+	require.Greater(t, second.CacheCreationInputTokens, 0)
+	require.Equal(t, 0, second.InputTokens)
+	require.Equal(t, 1500, second.InputTokens+second.CacheReadInputTokens+second.CacheCreationInputTokens)
+}
+
 func TestPromptCacheSimulationService_PreservesUpstreamUsageAndFallsBackToSessionContext(t *testing.T) {
 	repo := newMockSettingRepo()
 	data, err := json.Marshal(PromptCacheSimulationSettings{
 		Enabled:            true,
 		SemanticFirst:      true,
+		HitRatio:           1,
 		FallbackReadRatio:  0.7,
 		FallbackWriteRatio: 0.2,
 		TTLSeconds:         300,
@@ -457,6 +582,7 @@ func TestPromptCacheSimulationService_DoesNotSimulateOutsideMessagesPath(t *test
 	data, err := json.Marshal(PromptCacheSimulationSettings{
 		Enabled:            true,
 		SemanticFirst:      true,
+		HitRatio:           1,
 		FallbackReadRatio:  0.7,
 		FallbackWriteRatio: 0.2,
 		TTLSeconds:         300,
@@ -483,6 +609,7 @@ func TestPromptCacheSimulationService_DoesNotSimulateForModelMismatch(t *testing
 	data, err := json.Marshal(PromptCacheSimulationSettings{
 		Enabled:            true,
 		SemanticFirst:      true,
+		HitRatio:           1,
 		FallbackReadRatio:  0.7,
 		FallbackWriteRatio: 0.2,
 		TTLSeconds:         300,
@@ -541,6 +668,7 @@ func TestHandleNonStreamingResponse_PromptCacheSimulationPatchesBodyAndUsage(t *
 	data, err := json.Marshal(PromptCacheSimulationSettings{
 		Enabled:            true,
 		SemanticFirst:      true,
+		HitRatio:           1,
 		FallbackReadRatio:  0.7,
 		FallbackWriteRatio: 0.2,
 		TTLSeconds:         300,
@@ -615,6 +743,7 @@ func TestHandleNonStreamingResponse_PreservesAuthoritativeUpstreamCacheFields(t 
 	data, err := json.Marshal(PromptCacheSimulationSettings{
 		Enabled:            true,
 		SemanticFirst:      true,
+		HitRatio:           1,
 		FallbackReadRatio:  0.7,
 		FallbackWriteRatio: 0.2,
 		TTLSeconds:         300,
