@@ -305,7 +305,7 @@ func TestPromptCacheSimulationService_FallbackUsesRatiosWhenSemanticUnavailable(
 	repo := newMockSettingRepo()
 	data, err := json.Marshal(PromptCacheSimulationSettings{
 		Enabled:            true,
-		SemanticFirst:      true,
+		SemanticFirst:      false,
 		HitRatio:           1,
 		FallbackReadRatio:  0.7,
 		FallbackWriteRatio: 0.2,
